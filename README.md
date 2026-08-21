@@ -2,7 +2,9 @@
 
 **A Codex agent that lives on a computer you own. Text it like a personal assistant.**
 
-It's a small, deliberately simple framework that puts Codex on a machine you own — your laptop, a spare Mac mini, a VM on Railway or anywhere else — and wires it to your phone. You text it over iMessage/SMS and it does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at that machine, it can do while you're out.
+Codex runs on a computer you own: your laptop, a spare Mac mini, a VM. You text it. It runs commands, writes code, opens apps, moves files, checks things, and texts you back. Anything you could do at that machine, it can do while you're away.
+
+The code is small and easy to change.
 
 ```text
 you:    i have an idea for a habit tracker app. build me an mvp and send it my way
@@ -20,39 +22,36 @@ agent:  three. contract from legal needs your signature, a stripe payment failed
         and dana wants to move thursday's call.
 ```
 
-- Built on the official `@openai/codex-sdk`, running through your existing `codex login`.
-- Runs anywhere Node 22.13+ runs: macOS, Linux, a VM. macOS additionally unlocks the Mac-specific tools (Shortcuts, AppleScript, Hammerspoon).
-- Costs nothing beyond your ChatGPT plan. [Sendblue](https://sendblue.com) gives you a free number for the texting, and Codex runs on your existing `codex login`. No API key, no per-message billing.
-- Remembers context across texts, so you can say "now do the same for staging".
-- Direct messages only. Group chats are ignored on purpose.
-- Send it photos and screenshots. It sends back text, images, files, reactions.
-- Ships **barebones on purpose**: the messaging plumbing is done, the agent's abilities are yours to add (see [Customize](#customize-it)).
+- **Cost:** your ChatGPT plan. Nothing else. [Sendblue](https://sendblue.com) gives you a free number, and Codex uses your `codex login`. No API key.
+- **Runs on:** macOS, Linux, or a VM. Node 22.13+. On macOS it can also use Shortcuts, AppleScript, and Hammerspoon.
+- **Remembers** what you said earlier, so "now do the same for staging" works.
+- **Photos in, photos out.** Send it screenshots. It sends back text, images, files, and reactions.
+- **Direct messages only.** Group chats are ignored.
+- **Barebones on purpose.** The texting works out of the box. You add what the agent can do (see [Customize](#customize-it)).
 
-> **Security, plainly:** whoever is on the allowlist has full, unsandboxed control of that machine over text. Allowlist only yourself, and keep the list short. The Sendblue number is its own line, separate from your personal iMessage, so the blast radius is exactly the people you put on that list. Details in [SECURITY.md](SECURITY.md).
+> **Security:** anyone on the allowlist can run anything on that computer by texting it. There is no sandbox. Put only your own number on the list. See [SECURITY.md](SECURITY.md).
 
 ---
 
-## What's built, what's yours
+## What it handles
 
-Sendblue does the texting. The Codex SDK does the agent. This repo is the part in between.
+Sendblue does the texting. The Codex SDK does the agent. This repo is the part in between:
 
-**Already done:**
+- **Threads.** One conversation per sender, resumed every time you text. It remembers.
+- **Typing indicators.** Your text is marked read right away. The typing bubble stays up while Codex works, so a long task doesn't look dead.
+- **A queue.** Messages go into SQLite and run one at a time per sender. Reboot or kill it mid-task and the job resumes.
+- **Retries.** If Sendblue is down when a reply is ready, it waits and retries for ~15 minutes. It never re-runs Codex and never texts you twice.
+- **Checked output.** Codex replies in a JSON format the host validates. Bad output becomes plain text, never an action.
+- **The rest.** Webhook or polling, allowlist, attachments both ways, and old files cleaned up on a schedule.
+- **Routines.** Ask for recurring work in plain words. No cron to write.
 
-- **Threads.** One Codex thread per sender, resumed on every text, so context carries across days. If a thread can't be resumed, it starts a fresh one instead of erroring at you.
-- **Typing indicators and read receipts.** Your text gets marked read immediately; the typing bubble goes up while Codex works and refreshes every ~25s, so a three-minute task doesn't look like a dead line. Cleared the moment the reply lands.
-- **A real queue.** Messages land in SQLite, deduplicated, and run one turn at a time per sender so texts never trample each other (`maxConcurrency` lets different senders run in parallel). Reboot mid-task or kill the agent mid-task and the job is re-queued, not lost.
-- **Delivery that retries.** Replies go out as up to 4 bubbles, with optional reaction, image, file, or carousel. If Sendblue is down when a reply is ready, it's held and retried with backoff for ~15 minutes — it never re-runs Codex and never double-texts you.
-- **A validated envelope.** Codex answers in a JSON envelope the host checks before sending. Garbage output becomes bounded plain text, never an executed action.
-- **The front door.** Webhook or polling, direct messages only, allowlist enforced, group chats ignored, attachments in and out, old jobs and downloads pruned on a schedule.
-- **Routines.** Ask for recurring work in plain words and it becomes a durable schedule that survives restarts. No cron to write.
+**What you add:**
 
-**Not done, on purpose** — none of it needs changes to this repo's code:
-
-- `AGENTS.md` — who you are, what it's allowed to do, how it should talk.
-- Tools and actions — a shell script, another coding agent, a browser, Mac control, an API. Anything Codex can invoke.
+- `AGENTS.md` — who you are, what it can do, how it should talk.
+- Tools — a shell script, another coding agent, a browser, an API. Anything Codex can run.
 - Codex skills and MCP servers.
 
-About 4k lines of TypeScript. Read it, fork it, delete what you don't need. [Customize it](#customize-it) is the map.
+None of that requires changing this repo's code. About 4k lines of TypeScript. See [Customize it](#customize-it).
 
 ---
 
@@ -60,13 +59,12 @@ About 4k lines of TypeScript. Read it, fork it, delete what you don't need. [Cus
 
 **Three things to have first:**
 
-1. **A Sendblue number.** [Sendblue](https://sendblue.com) is the SMS/iMessage provider — it gives you a real phone number with an API behind it, so the agent has its own line instead of hijacking your personal iMessage. Sign up, grab the free number, and copy the **API Key ID**, **API Secret Key**, and the number in E.164 form (`+15551234567`).
+1. **A Sendblue number.** [Sendblue](https://sendblue.com) is the SMS/iMessage provider. It gives the agent its own phone number with an API, so it never touches your personal iMessage. Sign up, take the free number, and copy the **API Key ID**, **API Secret Key**, and the number as `+15551234567`.
 2. **Tailscale**, so Sendblue can reach the machine. ([tailscale.com/download](https://tailscale.com/download) — ngrok works too.)
-3. **Codex CLI, signed in.** `npm install -g @openai/codex && codex login`, then confirm:
+3. **Codex, signed in.** `npm install -g @openai/codex && codex login`, then check:
    ```bash
    codex login status     # must say: Logged in using ChatGPT
    ```
-   Your ChatGPT plan with Codex access is the whole cost of running this.
 
 Then let an agent do the rest.
 
@@ -111,7 +109,7 @@ shell history and logs.
     keep it awake — see "Keep it awake" in the README. Skip this on an always-on VM.
 ```
 
-It will stop and ask when it needs your keys, and pause at the Sendblue dashboard step, which is the one part it can't do for you.
+It will ask you for the keys when it needs them, and stop at the Sendblue dashboard step. That is the one part it can't do for you.
 
 ### Or do it by hand
 
@@ -126,7 +124,7 @@ npm ci && npm run build && npm link
 codex-sms-agent setup
 ```
 
-If `npm link` fails with `EACCES`, your Node is installed system-wide; either install Node via Homebrew/nvm or skip the link and use `node dist/cli.js <command>` everywhere below.
+If `npm link` fails with `EACCES`, your Node is installed system-wide. Either reinstall Node with Homebrew or nvm, or skip the link and use `node dist/cli.js <command>` below.
 
 `setup` asks for your Sendblue key and secret, your Sendblue number, **your** phone number(s) (the ones allowed to control the machine), your first name, a working directory (accept the default), a tunnel URL (leave blank for now), and the startup mode (**shadow**). It writes `~/.config/codex-sms-agent/config.json` at mode 0600.
 
@@ -144,7 +142,9 @@ Put the URL in the config as `"publicUrl"`, then in the Sendblue dashboard set t
 codex-sms-agent webhook-secret
 ```
 
-That secret is a shared password, not a cryptographic signature — anyone holding it can post messages as you. No tunnel at all still works: the agent polls Sendblue every minute as a fallback, just slower.
+That secret is a password, not a signature. Anyone who has it can post messages as you.
+
+No tunnel also works. The agent polls Sendblue every minute instead. It's just slower.
 
 **Run it.**
 
@@ -153,7 +153,7 @@ codex-sms-agent doctor     # checks Codex login, Sendblue keys, the number, port
 codex-sms-agent start
 ```
 
-It starts in **shadow** mode: receives texts, runs nothing, replies to nothing. Text your Sendblue number and watch for `message_queued`. If you see it, the pipe works. Then set `"mode": "active"` in the config and restart. (`CODEX_SMS_AGENT_MODE=active codex-sms-agent start` works for a one-off.)
+It starts in **shadow** mode: it receives texts but runs nothing and replies to nothing. Text your Sendblue number and look for `message_queued`. If you see it, everything is wired up. Then set `"mode": "active"` in the config and restart. (`CODEX_SMS_AGENT_MODE=active codex-sms-agent start` works for a one-off.)
 
 **Keep it running.**
 
@@ -167,7 +167,7 @@ Logs go to `~/.local/share/codex-sms-agent/logs/agent.log` (crashes in `agent.er
 
 ### Keep it awake
 
-An always-on VM needs nothing here. A Mac that sleeps can't answer texts or run routines, so pick one:
+Skip this on a VM. A sleeping Mac can't answer texts, so pick one:
 
 **Simplest:** System Settings → Battery (or Energy) → turn on *Prevent automatic sleeping when the display is off* (laptops: under Options, while on power adapter).
 
@@ -202,7 +202,7 @@ Keep it plugged in. Check with `pmset -g assertions` (you should see `PreventUse
 
 ## Talk to it
 
-Just text. No syntax. A few commands exist for when you need them:
+Just text it. No syntax. There are four commands if you need them:
 
 | Text | Does |
 |---|---|
@@ -213,9 +213,9 @@ Just text. No syntax. A few commands exist for when you need them:
 
 From the terminal, `codex-sms-agent status` shows whether the daemon is up, queue counts, routine count, and the last successful turn.
 
-### Routines (built in, nothing to install)
+### Routines
 
-Recurring work is part of the box. Say it in plain words and the agent creates a durable schedule in its SQLite store:
+Ask for recurring work in plain words. It saves the schedule and runs it:
 
 ```text
 you:    check ~/code/acme-api's CI every 2 hours and only text me if it's red
@@ -225,17 +225,17 @@ you:    what routines do I have
 you:    stop the CI one
 ```
 
-Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Plain intervals (every 30m, 2h, ...) run from when you asked; daily and weekly routines can be pinned to a clock time and to days of the week (local time zone).
+Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Intervals like every 30m or 2h count from when you asked. Daily and weekly ones can be set to a clock time and specific days, in your local time zone.
 
 ---
 
 ## Customize it
 
-Out of the box the agent has Codex, a shell, and the whole machine. That's already a lot. To make it *yours*, there are three layers, and none of them require touching this repo's code.
+Out of the box it has Codex, a shell, and the whole machine. To give it more, there are three layers. None of them need changes to this repo's code.
 
-### Tell it about your world: `AGENTS.md`
+### 1. `AGENTS.md`
 
-The agent's working directory is `~/.local/share/codex-sms-agent/workspace/`. The first time the agent starts it writes an `AGENTS.md` there with a managed block at the top (leave that alone, it's rewritten every turn). **Everything below it is yours** and Codex reads it every single turn:
+The agent works in `~/.local/share/codex-sms-agent/workspace/`. On first start it writes an `AGENTS.md` there. The block at the top is managed, so leave it alone. **Everything below it is yours**, and Codex reads it every turn:
 
 ```markdown
 <!-- managed block ends above this line -->
@@ -254,15 +254,15 @@ The agent's working directory is `~/.local/share/codex-sms-agent/workspace/`. Th
 - Never touch ~/Photos or ~/Documents/Taxes.
 ```
 
-This is where most of the personality and capability lives. Install a CLI, write one line about it, and the agent can use it.
+Install a CLI, write one line about it here, and the agent can use it.
 
-### Give it tools
+### 2. Tools
 
-Anything on your `PATH` is fair game (the agent's `PATH` includes `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). Install a CLI, add one line about it to `AGENTS.md`, done. Suggestions, roughly in order of how much they unlock:
+Anything on your `PATH` works. The agent's `PATH` includes `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin`. Install it, add a line to `AGENTS.md`, done. Some that are worth it:
 
-#### Other coding agents (delegation)
+#### Other coding agents
 
-Codex is good at short tasks inline. For a 40-minute refactor, it's better to hand the job to a dedicated agent and verify the result. Install whichever you already use:
+Codex handles short tasks itself. For a 40-minute refactor, it's better to hand the job off and check the result. Install whichever you already use:
 
 | Agent | Install | One-shot command the SMS agent can run |
 |---|---|---|
@@ -309,7 +309,7 @@ Hammerspoon is installed; use `hs -c` for windows and apps. `shortcuts run` for 
 
 #### Email, calendar, and docs
 
-Google's own [Workspace CLI](https://github.com/googleworkspace/cli) is the cleanest way to give it your inbox and calendar. It covers Gmail, Calendar, Drive, Docs, Sheets, and Chat behind one command, returns structured JSON, and was built with agents in mind.
+Google's [Workspace CLI](https://github.com/googleworkspace/cli) covers Gmail, Calendar, Drive, Docs, Sheets, and Chat in one command. It returns JSON and is built for agents.
 
 ```bash
 npm install -g @googleworkspace/cli
@@ -325,28 +325,28 @@ every command returns JSON. Read freely. Ask me before sending, replying, deleti
 or accepting an invite — draft it and text me the draft first.
 ```
 
-That's what turns "any emails I should look at?" and "what's on my calendar tomorrow?" into real answers.
+This is what makes "any emails I should look at?" and "what's on my calendar tomorrow?" work.
 
 #### Everything else
 
-`gh` for GitHub, `op` for 1Password, `aws`/`gcloud`/`flyctl` for your infra, `ffmpeg`, `yt-dlp`, whatever you use. The pattern is always the same: install it, authenticate it once in a terminal, mention it in `AGENTS.md`.
+`gh` for GitHub, `op` for 1Password, `aws`/`gcloud`/`flyctl` for infra, `ffmpeg`, `yt-dlp`, whatever you use. Same pattern every time: install it, log in once in a terminal, mention it in `AGENTS.md`.
 
-A complete, ready-to-edit example covering all of the above is in [`examples/AGENTS.example.md`](examples/AGENTS.example.md).
+A full example you can copy is in [`examples/AGENTS.example.md`](examples/AGENTS.example.md).
 
-### Codex skills and MCP servers
+### 3. Codex skills and MCP servers
 
-The agent runs through your normal Codex install, so whatever you've set up for Codex applies here too:
+It runs through your normal Codex install, so anything you set up for Codex works here:
 
 - **Skills** in `~/.codex/skills/` are available to it.
 - **MCP servers** configured in `~/.codex/config.toml` are available to it.
 
-If you've already taught Codex how to work on your machine, the SMS agent inherits all of it.
+Whatever you already taught Codex, the SMS agent gets too.
 
 ---
 
 ## Config reference
 
-`~/.config/codex-sms-agent/config.json`. Every key can also be an environment variable prefixed `CODEX_SMS_AGENT_` (`CODEX_SMS_AGENT_MODE`, `CODEX_SMS_AGENT_SENDBLUE_API_KEY`, `CODEX_SMS_AGENT_PORT`, ...); env wins over the file. Bare `PORT`/`HOST` are ignored on purpose.
+Lives in `~/.config/codex-sms-agent/config.json`. Every key also works as an environment variable prefixed `CODEX_SMS_AGENT_` (`CODEX_SMS_AGENT_MODE`, `CODEX_SMS_AGENT_SENDBLUE_API_KEY`, `CODEX_SMS_AGENT_PORT`). Env wins over the file. Bare `PORT` and `HOST` are ignored on purpose.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -373,23 +373,23 @@ cd codex-sms-agent && git pull && npm ci && npm run build
 codex-sms-agent service install     # idempotent; restarts the service gracefully
 ```
 
-All state is `~/.local/share/codex-sms-agent/state.sqlite` (plus `-wal`/`-shm`). To back it up, stop the service and copy those files. Codex's own conversation files live under `~/.codex/`; if they're gone, `/clear` starts fresh.
+All state is in `~/.local/share/codex-sms-agent/state.sqlite` (plus `-wal`/`-shm`). To back it up, stop the service and copy those files. Codex's own conversation files are under `~/.codex/`. If they're gone, `/clear` starts fresh.
 
-Housekeeping is automatic: finished jobs are pruned after 30 days, downloaded attachments after 7 days.
+Cleanup is automatic: finished jobs after 30 days, downloaded attachments after 7 days.
 
 ## What leaves your machine
 
-- **To Sendblue:** your texts, attachments, phone numbers, and the agent's replies. That's the messaging relay.
-- **To OpenAI (via the Codex SDK, under your ChatGPT login):** the prompt built from your text, the workspace `AGENTS.md`, any images you send, the output of every tool Codex runs, and web searches Codex makes.
-- **Nowhere else.** No telemetry, no third-party services. Logs stay local and contain event names, masked phone numbers, and tool types, never message text or credentials.
+- **To Sendblue:** your texts, attachments, phone numbers, and the agent's replies. That's the messaging.
+- **To OpenAI**, through the Codex SDK on your ChatGPT login: your text, the workspace `AGENTS.md`, any images you send, the output of every tool Codex runs, and its web searches.
+- **Nowhere else.** No telemetry. Logs stay on the machine and hold event names, masked phone numbers, and tool types. Never message text or credentials.
 
-## How it works, briefly
+## How it works
 
 ![Your text goes through Sendblue to the agent on your machine, which runs Codex and texts back](docs/flow.jpg)
 
-Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
+A text arrives by webhook or poll. It's dropped unless it's a direct message from an allowlisted number. It goes into SQLite, deduplicated. A worker runs one Codex turn in your workspace, resuming that sender's thread. Codex returns JSON: up to 4 bubbles, plus an optional reaction, image, file, or carousel. The host checks it and sends it through Sendblue.
 
-If the machine reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Sendblue is down when a reply is ready, the reply is kept and retried with backoff for about 15 minutes instead of re-running Codex. If Codex produces garbage, you get bounded plain text, never an executed action. Local files Codex wants to send you must live in its workspace or the media directory; it can't upload arbitrary paths. If a task edits the agent's own `AGENTS.md`, you get told.
+If the machine reboots mid-task, the task goes back in the queue. Same if you stop the agent mid-task. If Sendblue is down when a reply is ready, the reply is held and retried for about 15 minutes, instead of re-running Codex. If Codex returns garbage, you get plain text, never an action. Files it sends you have to live in its workspace or media directory, so it can't upload arbitrary paths. If a task edits the agent's own `AGENTS.md`, you get told.
 
 ## Development
 
