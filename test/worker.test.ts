@@ -244,12 +244,12 @@ describe("AgentWorker", () => {
   it("passes slash-prefixed paths through to Codex and recognizes only bare commands", async () => {
     expect(controlCommandFor("/clear")).toBe("/clear");
     expect(controlCommandFor("  /Status ")).toBe("/status");
-    expect(controlCommandFor("/Users/ali/app.ts is broken")).toBeUndefined();
+    expect(controlCommandFor("/Users/you/app.ts is broken")).toBeUndefined();
     expect(controlCommandFor("/tmp")).toBeUndefined();
     expect(controlCommandFor("/clear the cache please")).toBeUndefined();
 
     const test = harness(codexResult("session-path", { bubbles: ["looking"] }));
-    test.store.enqueue(message("path", { content: "/Users/ali/app.ts is broken" }), "webhook", 1);
+    test.store.enqueue(message("path", { content: "/Users/you/app.ts is broken" }), "webhook", 1);
     await test.worker.runOnce();
     expect(test.run).toHaveBeenCalledOnce();
     expect(test.sendblue.sendDirect).toHaveBeenCalledWith(expect.objectContaining({ content: "looking" }));

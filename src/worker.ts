@@ -75,7 +75,7 @@ export type ControlCommand = "/clear" | "/new" | "/restart" | "/help" | "/status
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set<ControlCommand>(["/clear", "/new", "/restart", "/help", "/status"]);
 
 /**
- * Only an exact, bare command counts. "/Users/ali/foo.ts is broken" is a
+ * Only an exact, bare command counts. "/Users/you/foo.ts is broken" is a
  * message for Codex, not a command.
  */
 export function controlCommandFor(content: string): ControlCommand | undefined {
