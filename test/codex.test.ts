@@ -120,6 +120,14 @@ describe("CodexRunner", () => {
     expect(workspaceInstructions).toContain("# Project instructions\nkeep this");
   });
 
+  it("prepares the workspace AGENTS.md before any turn runs", async () => {
+    const root = workspace();
+    const runner = new CodexRunner({ workspace: root, operatorName: "Sam", createClient: () => { throw new Error("unused"); } });
+    const path = await runner.prepareWorkspace();
+    expect(path).toBe(join(root, "AGENTS.md"));
+    expect(await readFile(path, "utf8")).toContain("Complete Sam's request");
+  });
+
   it("resumes an existing Codex thread", async () => {
     const resumeThread = vi.fn(() => ({ id: THREAD_A, run: vi.fn(async () => completed()) }));
     const startThread = vi.fn();

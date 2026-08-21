@@ -128,7 +128,7 @@ Out of the box the agent has Codex, a shell, and your Mac. That's already a lot.
 
 ### Tell it about your world: `AGENTS.md`
 
-The agent's working directory is `~/.local/share/codex-sms-agent/workspace/`. Its `AGENTS.md` has a managed block at the top (leave that alone, it's rewritten every turn). **Everything below it is yours** and Codex reads it every single turn:
+The agent's working directory is `~/.local/share/codex-sms-agent/workspace/`. The first time the agent starts it writes an `AGENTS.md` there with a managed block at the top (leave that alone, it's rewritten every turn). **Everything below it is yours** and Codex reads it every single turn:
 
 ```markdown
 <!-- managed block ends above this line -->

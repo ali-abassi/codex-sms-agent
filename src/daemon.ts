@@ -108,6 +108,7 @@ export async function startDaemon(
     timeoutMs: config.codexTimeoutMs,
     operatorName: config.operatorName,
   });
+  const instructionsPath = await codex.prepareWorkspace();
   const messaging = createMessagingPort(sendblue);
   const worker = new AgentWorker({
     store,
@@ -183,6 +184,7 @@ export async function startDaemon(
 
   logger.info("daemon_started", {
     mode: config.mode,
+    instructions: instructionsPath,
     host: server.host,
     port: server.port,
     publicUrl: config.publicUrl,

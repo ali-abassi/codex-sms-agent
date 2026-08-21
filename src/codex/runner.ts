@@ -222,10 +222,16 @@ export class CodexRunner {
     this.#createClient = options.createClient ?? ((clientOptions) => new Codex(clientOptions));
   }
 
-  async run(request: CodexTurnRequest): Promise<CodexTurnResult> {
-    const prompt = nonEmpty(request.prompt, "prompt");
+  /** Create the workspace and its AGENTS.md so operators can customize it before the first turn. */
+  async prepareWorkspace(): Promise<string> {
     await mkdir(this.workspace, { recursive: true, mode: 0o700 });
     await syncWorkspaceInstructions(this.workspace, this.operatorName);
+    return join(this.workspace, "AGENTS.md");
+  }
+
+  async run(request: CodexTurnRequest): Promise<CodexTurnResult> {
+    const prompt = nonEmpty(request.prompt, "prompt");
+    await this.prepareWorkspace();
 
     const client = this.#createClient({
       env: buildCodexEnvironment(this.#parentEnv, request.environment),
