@@ -2,6 +2,8 @@
 
 **A Codex agent that lives on your Mac. Text it like a personal assistant.**
 
+![Text your Mac: a laptop running a terminal and a phone showing an iMessage conversation](docs/hero.jpg)
+
 It runs on your own computer, gets your texts over iMessage/SMS, and does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at your Mac, it can do while you're out.
 
 ```text
@@ -313,6 +315,8 @@ Housekeeping is automatic: finished jobs are pruned after 30 days, downloaded at
 - **Nowhere else.** No telemetry, no third-party services. Logs stay local and contain event names, masked phone numbers, and tool types, never message text or credentials.
 
 ## How it works, briefly
+
+![Your text goes through Sendblue to the agent on your Mac, which runs Codex and texts back](docs/flow.png)
 
 Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
 
