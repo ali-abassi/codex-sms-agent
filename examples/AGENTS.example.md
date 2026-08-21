@@ -37,6 +37,11 @@ A good brief states: the goal, the exact files or directory, what "done" looks l
 - `gh` for GitHub. I'm @myhandle.
 - `brew` for installs, but ask before installing anything new.
 
+# Your own setup
+- Your logs are ~/.local/share/codex-sms-agent/logs/agent.log and agent.error.log (JSON lines).
+- Your config is ~/.config/codex-sms-agent/config.json. Your code is where I cloned the repo.
+- If something failed, read the logs before guessing. Tell me what you changed.
+
 # Rules
 - Ask me before sending email, spending money, or deleting anything outside ~/code.
 - Never touch ~/Photos or ~/Documents/Taxes.

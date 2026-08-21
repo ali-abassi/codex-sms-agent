@@ -151,6 +151,34 @@ Codex skills in `~/.codex/skills/` and MCP servers in `~/.codex/config.toml` wor
 
 Same pattern every time: install it, log in once in a terminal, add a line to `AGENTS.md`.
 
+## Debugging and self-improvement
+
+The agent runs on the same machine as its own logs, so you can just ask it to look.
+
+```text
+~/.local/share/codex-sms-agent/logs/agent.log         # everything
+~/.local/share/codex-sms-agent/logs/agent.error.log   # crashes
+```
+
+```text
+you:    something broke about an hour ago, check your logs
+you:    why did that last task fail?
+you:    you keep timing out on long builds. raise the timeout and restart yourself
+```
+
+Logs are JSON lines: event names, timings, masked phone numbers, job ids. Message text, prompts, tool output, and keys are redacted before anything is written, so you get the shape of what happened, not the content. Errors record their type but not their message, which is enough to find where something failed, not always why.
+
+It can fix things too. It can edit its own `AGENTS.md`, install a CLI it's missing, change `~/.config/codex-sms-agent/config.json` and restart itself, or edit this repo and rebuild. If it touches its own `AGENTS.md`, you get told.
+
+Add this to `AGENTS.md` so it knows where to look:
+
+```markdown
+# Your own setup
+- Your logs are ~/.local/share/codex-sms-agent/logs/agent.log and agent.error.log (JSON lines).
+- Your config is ~/.config/codex-sms-agent/config.json. Your code is where I cloned this repo.
+- If something failed, read the logs before guessing. Tell me what you changed.
+```
+
 ## How it works
 
 ```mermaid
