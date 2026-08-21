@@ -220,7 +220,6 @@ Codex is good at short tasks inline. For a 40-minute refactor, it's better to ha
 | Claude Code | `npm i -g @anthropic-ai/claude-code`, then `claude` once to log in | `claude -p "<brief>" --permission-mode acceptEdits` |
 | Codex CLI | already installed (step 1) | `codex exec --full-auto "<brief>"` |
 | OpenCode | `npm i -g opencode-ai` | `opencode run "<brief>"` |
-| Pi | see its docs | `pi -p --no-session --mode text "<brief>"` |
 
 Then in `AGENTS.md`:
 

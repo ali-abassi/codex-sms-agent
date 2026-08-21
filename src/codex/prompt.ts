@@ -45,5 +45,5 @@ For a reaction, replace null with {"value":"reaction value","messageHandle":null
 }
 
 export function buildCodexTurnPrompt(request: string): string {
-  return `Perform the trusted contact request below. Follow AGENTS.md, use tools as needed, and return only the final JSON host action envelope. If the request cannot be completed, use the text action to explain the exact blocker without claiming success.\n\n<trusted_contact_request>\n${request}\n</trusted_contact_request>`;
+  return `Perform the trusted contact request below. Follow AGENTS.md, use tools as needed, and return only the final JSON host action envelope. If the request cannot be completed, use a single bubble to explain the exact blocker without claiming success.\n\n<trusted_contact_request>\n${request}\n</trusted_contact_request>`;
 }

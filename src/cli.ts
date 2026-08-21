@@ -79,7 +79,7 @@ async function tunnel(args: string[]): Promise<void> {
   const config = await loadConfig({ configPath: configPath(args) });
   process.stdout.write(`Tailscale Funnel (recommended when already signed in):\n  tailscale funnel --bg ${config.port}\n\n`);
   process.stdout.write(`ngrok:\n  ngrok http ${config.port}\n\n`);
-  process.stdout.write("After the tunnel is live, set publicUrl in the private config and register <publicUrl>/webhook as a signed Sendblue receive webhook.\n");
+  process.stdout.write("After the tunnel is live, set publicUrl in the private config and register <publicUrl>/webhook as the Sendblue receive webhook, sending the value of `codex-sms-agent webhook-secret` in the sb-signing-secret header.\n");
 }
 
 function routineInterval(value: string): number {

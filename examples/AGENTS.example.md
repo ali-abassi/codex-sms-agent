@@ -15,7 +15,6 @@ Work inline for small things. For anything that needs a long, focused coding ses
 - Claude Code: `claude -p "<brief>" --permission-mode acceptEdits --output-format text` (run in the project dir)
 - Codex CLI: `codex exec --full-auto "<brief>"` (run in the project dir)
 - OpenCode: `opencode run "<brief>"` (run in the project dir)
-- Pi: `pi -p --no-session --mode text "<brief>"`
 
 A good brief states: the goal, the exact files or directory, what "done" looks like, how to verify (the test command), and what not to touch. Write long briefs to a temp file and pass the file contents, don't cram them into a shell argument.
 
