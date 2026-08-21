@@ -39,7 +39,7 @@ cd codex-sms-agent
 codex       # or: claude
 ```
 
-Paste this in:
+Install instructions for your agent:
 
 ```text
 Set up codex-sms-agent on this machine, from this repo. Ask me for anything you need.
@@ -153,7 +153,21 @@ Same pattern every time: install it, log in once in a terminal, add a line to `A
 
 ## How it works
 
-![Your text goes through Sendblue to the agent on your machine, which runs Codex and texts back](docs/flow.jpg)
+```mermaid
+flowchart LR
+  phone["Your phone"] -->|text| sb["Sendblue"]
+  sb -->|webhook| tun["Tailscale tunnel"]
+  subgraph box ["Your Mac / Mac mini / VM"]
+    tun --> srv["agent, port 8787"]
+    srv --> db[("SQLite queue")]
+    db --> w["worker"]
+    w --> codex["Codex SDK"]
+    codex --> tools["shell, files, your CLIs"]
+    tools --> codex
+  end
+  codex -->|"JSON reply, validated"| sb
+  sb -->|"text back"| phone
+```
 
 A text arrives. It's dropped unless it's a direct message from an allowlisted number. It goes into SQLite, deduplicated. A worker runs one Codex turn in your workspace, resuming that sender's conversation. Codex replies in JSON that the host checks before anything is sent.
 
