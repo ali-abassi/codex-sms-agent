@@ -34,9 +34,9 @@ agent:  three. contract from legal needs your signature, a stripe payment failed
 
 ## What's built, what's yours
 
-The whole point is that the boring, fiddly half is finished and the interesting half is left open. Two dependencies do the heavy lifting — **Sendblue** for the messaging transport and the **Codex SDK** for the agent — and this repo is the thin, readable layer between them that makes texting a computer actually feel good.
+Sendblue does the texting. The Codex SDK does the agent. This repo is the part in between.
 
-**Handled for you, so the chat feels smooth and holds up:**
+**Already done:**
 
 - **Threads.** One Codex thread per sender, resumed on every text, so context carries across days. If a thread can't be resumed, it starts a fresh one instead of erroring at you.
 - **Typing indicators and read receipts.** Your text gets marked read immediately; the typing bubble goes up while Codex works and refreshes every ~25s, so a three-minute task doesn't look like a dead line. Cleared the moment the reply lands.
@@ -46,13 +46,13 @@ The whole point is that the boring, fiddly half is finished and the interesting 
 - **The front door.** Webhook or polling, direct messages only, allowlist enforced, group chats ignored, attachments in and out, old jobs and downloads pruned on a schedule.
 - **Routines.** Ask for recurring work in plain words and it becomes a durable schedule that survives restarts. No cron to write.
 
-**Yours to build** — three layers, none of which require touching this repo's code:
+**Not done, on purpose** — none of it needs changes to this repo's code:
 
 - `AGENTS.md` — who you are, what it's allowed to do, how it should talk.
 - Tools and actions — a shell script, another coding agent, a browser, Mac control, an API. Anything Codex can invoke.
 - Codex skills and MCP servers.
 
-It's about 4k lines of plain TypeScript with no framework ceremony. Read it, fork it, rip parts out — [Customize it](#customize-it) is the map.
+About 4k lines of TypeScript. Read it, fork it, delete what you don't need. [Customize it](#customize-it) is the map.
 
 ---
 
