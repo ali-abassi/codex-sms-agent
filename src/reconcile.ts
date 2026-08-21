@@ -63,7 +63,8 @@ export class Reconciler {
         fetched += page.messages.length;
         for (const message of page.messages) {
           if (this.#options.ingestion.ingest(message, "reconcile") === "queued") queued += 1;
-          newest = Math.max(newest, rawUpdatedAt(message.raw, message.dateSent));
+          // A provider row with a far-future timestamp must not skip later messages.
+          newest = Math.min(this.#now(), Math.max(newest, rawUpdatedAt(message.raw, message.dateSent)));
         }
         if (!page.pagination.hasMore || page.messages.length === 0) break;
         offset += page.pagination.limit;

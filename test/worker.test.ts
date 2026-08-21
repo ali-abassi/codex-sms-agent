@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboundMessage } from "../src/domain/message.js";
@@ -68,7 +68,7 @@ const logger: Logger = {
 };
 
 function harness(result: CodexTurnResult | Error, overrides: Partial<ConstructorParameters<typeof AgentWorker>[0]> = {}) {
-  const root = temporaryDirectory();
+  const root = overrides.mediaRoot ?? temporaryDirectory();
   const store = new StateStore(join(root, "state.sqlite"));
   const sendblue = messaging();
   const run = vi.fn(async (_input: Parameters<CodexRunner["run"]>[0]) => {
@@ -169,13 +169,15 @@ describe("AgentWorker", () => {
   });
 
   it("dispatches reactions, uploaded media, carousels, and text with host-bound targets", async () => {
+    const root = temporaryDirectory();
+    writeFileSync(join(root, "image.png"), "png");
     const test = harness(codexResult("session-rich", {
       reaction: { messageHandle: "rich", value: "love" },
-      media: { kind: "local", localPath: "/tmp/image.png", caption: "image" },
+      media: { kind: "local", localPath: join(root, "image.png"), caption: "image" },
       carousel: { urls: ["https://example.test/1.png", "https://example.test/2.png"] },
       text: "All sent.",
       replyTo: "rich",
-    }));
+    }), { mediaRoot: root });
     test.store.enqueue(message("rich"), "webhook", 1);
 
     await test.worker.runOnce();
@@ -185,9 +187,26 @@ describe("AgentWorker", () => {
       messageHandle: "rich",
       reaction: "love",
     });
-    expect(test.sendblue.uploadFile).toHaveBeenCalledWith("/tmp/image.png");
+    expect(test.sendblue.uploadFile).toHaveBeenCalledWith(expect.stringMatching(/image\.png$/));
     expect((test.sendblue.sendCarousel as any).mock.calls[0][0]).not.toHaveProperty("replyTo");
     expect(test.sendblue.sendDirect).toHaveBeenCalledTimes(2);
+    test.store.close();
+  });
+
+  it("refuses to upload local files outside the allowed media directories", async () => {
+    const test = harness(codexResult("session-escape", {
+      media: { kind: "local", localPath: "/etc/hosts" },
+      bubbles: ["here"],
+    }));
+    test.store.enqueue(message("escape"), "webhook", 1);
+
+    await test.worker.runOnce();
+
+    expect(test.sendblue.uploadFile).not.toHaveBeenCalled();
+    expect(test.sendblue.sendDirect).toHaveBeenCalledTimes(1);
+    expect(test.sendblue.sendDirect).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("Hit a snag"),
+    }));
     test.store.close();
   });
 

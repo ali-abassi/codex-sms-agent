@@ -65,14 +65,23 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
   const logger = options.logger ?? console;
   const maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024;
 
-  const server = createServer(async (request, response) => {
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  const server = createServer((request, response) => {
+    handle(request, response).catch(() => {
+      logger.error("Webhook handler failed");
+      if (!response.headersSent) json(response, 500, { ok: false, error: "Internal error" });
+      else response.destroy();
+    });
+  });
 
-    if (request.method === "GET" && url.pathname === "/health") {
+  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    // Only the path matters; never parse the untrusted Host header.
+    const pathname = (request.url ?? "/").split("?", 1)[0];
+
+    if (request.method === "GET" && pathname === "/health") {
       json(response, 200, { ok: true, ...options.health() });
       return;
     }
-    if (request.method !== "POST" || url.pathname !== "/webhook") {
+    if (request.method !== "POST" || pathname !== "/webhook") {
       json(response, 404, { ok: false, error: "Not found" });
       return;
     }
@@ -97,7 +106,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
       logger.error("Webhook ingestion failed");
       json(response, 500, { ok: false, error: "Internal error" });
     }
-  });
+  }
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

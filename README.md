@@ -11,11 +11,12 @@ agent:  yep, landed at 14:02. nginx restarted, /health is 200.
 you:    make me a python script that renames everything in ~/Downloads by date
 agent:  done, ~/bin/rename_by_date.py. dry-run by default, --apply to commit.
 
-you:    every weekday at 8 text me what's on my calendar
-agent:  set. first one tomorrow 8am.
+you:    check the acme-api CI every 2 hours and only text me if it's red
+agent:  on it. every 2h, quiet unless something breaks.
 ```
 
 - Built on the official `@openai/codex-sdk`, using your existing ChatGPT plan (`codex login`). No API key.
+- Needs: macOS (Linux works for the daemon, minus the Mac-specific tools), Node 22.13+, a ChatGPT plan with Codex, and a [Sendblue](https://sendblue.com) number (paid; free sandbox to try).
 - Remembers context across texts, so you can say "now do the same for staging".
 - Direct messages only. Group chats are ignored on purpose.
 - Send it photos and screenshots. It sends back text, images, files, reactions.
@@ -51,17 +52,21 @@ codex login status     # must say: Logged in using ChatGPT
 ### 3. Install and configure
 
 ```bash
+node -v     # 22.13 or newer (the queue uses node:sqlite)
 git clone https://github.com/ali-abassi/codex-sms-agent.git
 cd codex-sms-agent
 npm ci && npm run build && npm link
 codex-sms-agent setup
 ```
 
+If `npm link` fails with `EACCES`, your Node is installed system-wide; either install Node via Homebrew/nvm or skip the link and use `node dist/cli.js <command>` everywhere below.
+
 `setup` asks for:
 - your Sendblue API key and secret
 - your Sendblue number
 - **your** phone number(s), the ones allowed to control the Mac
 - your first name (so it knows what to call you)
+- a working directory (accept the default), a tunnel URL (**leave blank for now**, step 4), and the startup mode (**shadow**)
 
 It writes everything to `~/.config/codex-sms-agent/config.json` (mode 0600). Then:
 
@@ -83,7 +88,11 @@ ngrok http 8787
 Either gives you an `https://...` URL. Then:
 
 1. Put it in the config: `"publicUrl": "https://your-url"`
-2. In the Sendblue dashboard, set your **receive webhook** to `https://your-url/webhook` and have it send your `webhookSecret` (from the config file) in the `sb-signing-secret` header.
+2. In the Sendblue dashboard, set your **receive webhook** to `https://your-url/webhook` and have it send your webhook secret in the `sb-signing-secret` header. Get the value with:
+   ```bash
+   codex-sms-agent webhook-secret
+   ```
+   This is a shared secret, not a cryptographic signature: anyone who has it can post messages as you, so treat it like a password.
 
 No tunnel? It still works. The agent polls Sendblue every minute as a fallback. Just slower.
 
@@ -95,7 +104,7 @@ codex-sms-agent start
 
 It starts in **shadow** mode: it receives texts but doesn't run Codex or reply. Text your Sendblue number and watch for `message_queued` in the output. If you see it, the pipe works.
 
-Now flip it on. In `~/.config/codex-sms-agent/config.json` set `"mode": "active"`, restart, and text it something.
+Now flip it on. In `~/.config/codex-sms-agent/config.json` set `"mode": "active"`, restart, and text it something. (`SMS_AGENT_MODE=active codex-sms-agent start` works for a one-off.)
 
 ### 6. Keep it running
 
@@ -103,7 +112,7 @@ Now flip it on. In `~/.config/codex-sms-agent/config.json` set `"mode": "active"
 codex-sms-agent service install    # starts at login, restarts on crash, survives reboots
 ```
 
-Logs go to `~/.local/share/codex-sms-agent/logs/agent.log`. `codex-sms-agent service uninstall` removes it.
+Logs go to `~/.local/share/codex-sms-agent/logs/agent.log` (crashes land in `agent.error.log`). `codex-sms-agent service uninstall` removes it. Keep the clone where it is; the service points at this checkout's `dist/`.
 
 ### 7. Keep the Mac awake
 
@@ -156,13 +165,13 @@ Just text. No syntax. A few commands exist for when you need them:
 Recurring work is part of the box. Say it in plain words and the agent creates a durable schedule in its SQLite store:
 
 ```text
-you:    every weekday at 8 text me what's on my calendar
 you:    check ~/code/acme-api's CI every 2 hours and only text me if it's red
+you:    every morning send me the top 3 items from my todo.txt
 you:    what routines do I have
 you:    stop the CI one
 ```
 
-Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Intervals go from 1 minute to 365 days.
+Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Routines are **intervals** (every 30m, 2h, 1d, 1w; 1 minute to 365 days) anchored at creation time, not clock-aligned cron; "every morning" means every 24 hours from when you asked. Exact-time scheduling is on the roadmap.
 
 ---
 
@@ -277,17 +286,34 @@ If you've already taught Codex how to work on your machine, the SMS agent inheri
 | `workspace` | `~/.local/share/codex-sms-agent/workspace` | Where Codex works and where `AGENTS.md` lives |
 | `codexModel` | `gpt-5.6-sol` | Any model your Codex login offers |
 | `codexReasoningEffort` | `medium` | `minimal` to `max` |
-| `codexTimeoutMs` | 2 hours | Max per task. Long tasks are fine |
+| `codexTimeoutMs` | 30 min | Max per task. Raise it for long builds; with `maxConcurrency: 1` a long task blocks everything else |
 | `maxConcurrency` | 1 | Tasks in parallel across *different* senders. One sender is always sequential |
 | `pollIntervalMs` | 60000 | Fallback polling interval |
 
 ---
 
+## Updating and backup
+
+```bash
+cd codex-sms-agent && git pull && npm ci && npm run build
+codex-sms-agent service install     # idempotent; restarts the service gracefully
+```
+
+All state is `~/.local/share/codex-sms-agent/state.sqlite` (plus `-wal`/`-shm`). To back it up, stop the service and copy those files. Codex's own conversation files live under `~/.codex/`; if they're gone, `/clear` starts fresh.
+
+Housekeeping is automatic: finished jobs are pruned after 30 days, downloaded attachments after 7 days.
+
+## What leaves your machine
+
+- **To Sendblue:** your texts, attachments, phone numbers, and the agent's replies. That's the messaging relay.
+- **To OpenAI (via the Codex SDK, under your ChatGPT login):** the prompt built from your text, the workspace `AGENTS.md`, any images you send, the output of every tool Codex runs, and web searches Codex makes.
+- **Nowhere else.** No telemetry, no third-party services. Logs stay local and contain event names, masked phone numbers, and tool types, never message text or credentials.
+
 ## How it works, briefly
 
 Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
 
-If the Mac reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Codex produces garbage, you get bounded plain text, never an executed action. Logs contain event names and masked phone numbers, never message content or credentials.
+If the Mac reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Codex produces garbage, you get bounded plain text, never an executed action. Local files Codex wants to send you must live in its workspace or the media directory; it can't upload arbitrary paths.
 
 ## Development
 

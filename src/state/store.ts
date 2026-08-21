@@ -274,7 +274,8 @@ export class StateStore {
   retry(jobId: number, error: unknown, availableAt: number, now: number): boolean {
     epoch(now, "now");
     epoch(availableAt, "availableAt");
-    if (availableAt <= now) throw new RangeError("availableAt must be in the future");
+    // Clock skew must never strand a processing row; clamp instead of throwing.
+    if (availableAt <= now) availableAt = now + 1;
 
     const result = this.#database.prepare(`
       UPDATE inbound_jobs
@@ -523,6 +524,20 @@ export class StateStore {
       ).run(nextRunAt, id);
     }
     return queued;
+  }
+
+  /** Drop finished jobs older than the retention window. Message content lives in these rows. */
+  pruneFinishedJobs(finishedBefore: number): number {
+    epoch(finishedBefore, "finishedBefore");
+    const result = this.#database.prepare(`
+      DELETE FROM inbound_jobs
+      WHERE state IN ('done', 'failed') AND finished_at IS NOT NULL AND finished_at < ?
+    `).run(finishedBefore);
+    return Number(result.changes);
+  }
+
+  checkpoint(): void {
+    this.#database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
 
   close(): void {

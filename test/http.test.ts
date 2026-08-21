@@ -45,6 +45,13 @@ describe("local webhook server", () => {
     expect(test.onWebhook).toHaveBeenCalledWith({ message_handle: "message" });
   });
 
+  it("survives malformed Host headers and unknown paths without crashing", async () => {
+    const test = await server();
+    const response = await fetch(`${test.url}/health?x=1`, { headers: { host: "a b[" } });
+    expect(response.status).toBe(200);
+    expect((await fetch(`${test.url}/nope`)).status).toBe(404);
+  });
+
   it("rejects missing or wrong secrets before parsing the body", async () => {
     const test = await server();
     for (const secret of [undefined, "wrong"]) {

@@ -1,10 +1,11 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "./config.js";
 import { createCodexRunner } from "./codex/runner.js";
 import { startHttpServer, type RunningHttpServer } from "./http/server.js";
 import { IngestionService } from "./ingest.js";
+import { SendblueNormalizationError } from "./sendblue/normalize.js";
 import type { Logger } from "./log.js";
 import { Reconciler } from "./reconcile.js";
 import { createSendblueClient } from "./sendblue/client.js";
@@ -15,6 +16,23 @@ import { AgentWorker } from "./worker.js";
 const ACTIVE_AFTER_KEY = "daemon.active_after";
 const WORKER_IDLE_MS = 250;
 const SHUTDOWN_GRACE_MS = 15_000;
+const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000;
+const JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const MEDIA_RETENTION_MS = 7 * 24 * 60 * 60_000;
+
+async function pruneDirectory(root: string, olderThan: number): Promise<number> {
+  let removed = 0;
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    const info = await stat(path).catch(() => undefined);
+    if (info && info.mtimeMs < olderThan) {
+      await rm(path, { recursive: true, force: true }).catch(() => undefined);
+      removed += 1;
+    }
+  }
+  return removed;
+}
 
 export type RunningDaemon = {
   server: RunningHttpServer;
@@ -26,11 +44,14 @@ export type RunningDaemon = {
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
-    const timeout = setTimeout(resolve, ms);
     const abort = () => {
       clearTimeout(timeout);
       resolve();
     };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
     signal.addEventListener("abort", abort, { once: true });
     timeout.unref?.();
   });
@@ -54,10 +75,13 @@ export async function startDaemon(
   logger: Logger,
   hooks: DaemonHooks = {},
 ): Promise<RunningDaemon> {
-  const onFatal = hooks.onFatal ?? ((event: string) => {
+  let closed = false;
+  const onFatal = (event: string) => {
+    if (closed) return;
+    if (hooks.onFatal) return hooks.onFatal(event);
     logger.error("daemon_fatal", { event });
     process.exit(1);
-  });
+  };
   await Promise.all([
     mkdir(config.stateDir, { recursive: true, mode: 0o700 }),
     mkdir(config.workspace, { recursive: true, mode: 0o700 }),
@@ -122,6 +146,7 @@ export async function startDaemon(
     routineCliPath: fileURLToPath(new URL("./cli.js", import.meta.url)),
     stateDatabasePath,
     status: () => ({ mode: config.mode, model: config.codexModel }),
+    outboundMediaRoots: [config.workspace, join(config.stateDir, "media")],
   });
 
   const controller = new AbortController();
@@ -135,6 +160,9 @@ export async function startDaemon(
       try {
         return ingestion.ingestWebhook(payload);
       } catch (error) {
+        // Malformed payloads are acknowledged so Sendblue stops retrying; anything
+        // else (e.g. SQLite failure) must surface as a 500 so delivery is retried.
+        if (!(error instanceof SendblueNormalizationError)) throw error;
         logger.warn("webhook_payload_ignored", { error });
         return "ignored";
       }
@@ -176,6 +204,21 @@ export async function startDaemon(
   const routineTimer = setInterval(enqueueRoutines, 5_000);
   routineTimer.unref?.();
 
+  const maintenance = async () => {
+    try {
+      const now = Date.now();
+      const jobs = store.pruneFinishedJobs(now - JOB_RETENTION_MS);
+      const media = await pruneDirectory(join(config.stateDir, "media", "inbound"), now - MEDIA_RETENTION_MS);
+      store.checkpoint();
+      if (jobs > 0 || media > 0) logger.info("maintenance_complete", { prunedJobs: jobs, prunedMedia: media });
+    } catch (error) {
+      logger.warn("maintenance_failed", { error });
+    }
+  };
+  void maintenance();
+  const maintenanceTimer = setInterval(() => { void maintenance(); }, MAINTENANCE_INTERVAL_MS);
+  maintenanceTimer.unref?.();
+
   await reconciler.run().catch(() => undefined);
   const reconcileTimer = setInterval(() => {
     void reconciler.run().catch(() => undefined);
@@ -191,7 +234,6 @@ export async function startDaemon(
     activeAfter: new Date(activeAfter).toISOString(),
   });
 
-  let closed = false;
   return {
     server,
     mode: config.mode,
@@ -202,12 +244,18 @@ export async function startDaemon(
       controller.abort();
       clearInterval(routineTimer);
       clearInterval(reconcileTimer);
+      clearInterval(maintenanceTimer);
       await server.close();
       const aborted = worker.abortAll("shutdown");
       if (aborted > 0) logger.info("inflight_turns_aborted", { count: aborted });
       const settled = await withTimeout(Promise.allSettled(workerTasks), SHUTDOWN_GRACE_MS);
-      if (settled === "timeout") logger.warn("shutdown_grace_exceeded", { graceMs: SHUTDOWN_GRACE_MS });
-      store.close();
+      if (settled === "timeout") {
+        // A worker is still mid-turn; leave the database open for it rather than
+        // crashing it on a closed handle. The supervisor's kill will finish the job.
+        logger.warn("shutdown_grace_exceeded", { graceMs: SHUTDOWN_GRACE_MS });
+      } else {
+        store.close();
+      }
       logger.info("daemon_stopped");
     },
   };

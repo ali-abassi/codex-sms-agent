@@ -226,6 +226,27 @@ describe("StateStore", () => {
     }
   });
 
+  it("prunes old finished jobs, keeps live ones, and clamps retry times under clock skew", () => {
+    const store = new StateStore(databasePath());
+    try {
+      store.enqueue(message("old"), "webhook", 100);
+      store.enqueue(message("new", { fromNumber: "+15550000003" }), "webhook", 101);
+      store.enqueue(message("live", { fromNumber: "+15550000004" }), "webhook", 102);
+      store.markDone(store.claimNext(200)!.id, 300);
+      store.markDone(store.claimNext(200)!.id, 5_000);
+      const live = store.claimNext(200)!;
+      expect(store.retry(live.id, new Error("skew"), 150, 200)).toBe(true);
+      expect(store.getJobByHandle("live")?.availableAt).toBe(201);
+
+      expect(store.pruneFinishedJobs(1_000)).toBe(1);
+      expect(store.getJobByHandle("old")).toBeUndefined();
+      expect(store.getJobByHandle("new")?.state).toBe("done");
+      store.checkpoint();
+    } finally {
+      store.close();
+    }
+  });
+
   it("completes a pending control job directly even while its thread is busy", () => {
     const store = new StateStore(databasePath());
     try {

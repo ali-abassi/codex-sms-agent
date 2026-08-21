@@ -28,10 +28,14 @@ function expandHome(path: string): string {
 export async function writeSetupConfig(path: string, config: SetupConfig): Promise<void> {
   const target = expandHome(path);
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, {
-    mode: 0o600,
-    flag: "wx",
-  });
+  try {
+    await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw Object.assign(new Error(`Config already exists at ${target}`), { code: "EEXIST" });
+    }
+    throw error;
+  }
   await chmod(target, 0o600);
 }
 

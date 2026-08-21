@@ -16,7 +16,8 @@ Usage:
   codex-sms-agent setup [--config PATH]
   codex-sms-agent doctor [--config PATH]
   codex-sms-agent start [--config PATH]
-  codex-sms-agent config [--config PATH]
+  codex-sms-agent config [--config PATH]          # redacted
+  codex-sms-agent webhook-secret [--config PATH]  # prints the value to paste into Sendblue
   codex-sms-agent tunnel [--config PATH]
   codex-sms-agent service install|uninstall [--config PATH]
   codex-sms-agent help
@@ -162,6 +163,34 @@ async function service(args: string[]): Promise<void> {
   process.stdout.write(`Service installed: ${installed}\n`);
 }
 
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return "Unknown error";
+  const issues = zodIssues(error) ?? zodIssues(error.cause);
+  if (issues) {
+    const missing = issues.filter((issue) => issue.code === "invalid_type" && issue.message.includes("undefined")).map((issue) => issue.path.join("."));
+    const other = issues.filter((issue) => !missing.includes(issue.path.join("."))).map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`);
+    const lines = [error.message.startsWith("Invalid config") ? error.message : "Config is incomplete."];
+    if (missing.length > 0) lines.push(`Missing: ${missing.join(", ")}`);
+    lines.push(...other);
+    lines.push("Run: codex-sms-agent setup   (or set the values by environment variable)");
+    return lines.join("\n  ");
+  }
+  if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+    return `${error.message}\n  A config already exists. Edit it, or delete it and run setup again.`;
+  }
+  return error.message;
+}
+
+function zodIssues(value: unknown): Array<{ code: string; path: PropertyKey[]; message: string }> | undefined {
+  const issues = (value as { issues?: unknown } | undefined)?.issues;
+  return Array.isArray(issues) ? issues as Array<{ code: string; path: PropertyKey[]; message: string }> : undefined;
+}
+
+async function webhookSecret(args: string[]): Promise<void> {
+  const config = await loadConfig({ configPath: configPath(args) });
+  process.stdout.write(`${config.webhookSecret}\n`);
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const command = args[0] ?? "help";
   switch (command) {
@@ -176,6 +205,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       break;
     case "config":
       await showConfig(args);
+      break;
+    case "webhook-secret":
+      await webhookSecret(args);
       break;
     case "tunnel":
       await tunnel(args);
@@ -198,8 +230,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    process.stderr.write(`codex-sms-agent: ${message}\n`);
+    process.stderr.write(`codex-sms-agent: ${describeError(error)}\n`);
     process.exitCode = 1;
   });
 }

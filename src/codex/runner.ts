@@ -19,7 +19,7 @@ import {
 
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_REASONING_EFFORT: ModelReasoningEffort = "medium";
-export const DEFAULT_CODEX_TIMEOUT_MS = 2 * 60 * 60_000;
+export const DEFAULT_CODEX_TIMEOUT_MS = 30 * 60_000;
 
 const MANAGED_INSTRUCTIONS_START = "<!-- codex-sms-agent:managed:start -->";
 const MANAGED_INSTRUCTIONS_END = "<!-- codex-sms-agent:managed:end -->";

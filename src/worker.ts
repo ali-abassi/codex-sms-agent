@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { join, relative, isAbsolute } from "node:path";
 import type { InboundJob, StateStore } from "./state/store.js";
 import { threadKey } from "./domain/message.js";
 import { CodexRunnerError, type CodexRunner, type CodexTurnResult } from "./codex/runner.js";
@@ -55,7 +56,20 @@ export type AgentWorkerOptions = {
   stateDatabasePath?: string;
   /** Static facts reported by /status. */
   status?: () => { mode: string; model: string };
+  /** Directories Codex may send local files from. Defaults to the media root only. */
+  outboundMediaRoots?: readonly string[];
 };
+
+async function confinedPath(candidate: string, roots: readonly string[]): Promise<string> {
+  const resolved = await realpath(candidate);
+  const allowed = await Promise.all(roots.map((root) => realpath(root).catch(() => undefined)));
+  for (const root of allowed) {
+    if (!root) continue;
+    const rel = relative(root, resolved);
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
+  }
+  throw new Error("Codex selected a local file outside the allowed media directories");
+}
 
 export type ControlCommand = "/clear" | "/new" | "/restart" | "/help" | "/status";
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set<ControlCommand>(["/clear", "/new", "/restart", "/help", "/status"]);
@@ -183,7 +197,8 @@ export class AgentWorker {
       return "handled";
     }
     if (command === "/restart") {
-      this.abortAll("cancelled");
+      // Re-queue in-flight work so it resumes after the restart; /clear is the "stop it" command.
+      this.abortAll("shutdown");
       this.#options.store.clearCodexThreadId(thread);
       await this.#reply(job, { content: "Restarting now. I’ll be back in a few seconds with a clean context." });
       return "restart";
@@ -228,7 +243,9 @@ export class AgentWorker {
 
     if (envelope.media) {
       const mediaUrl = envelope.media.kind === "local"
-        ? (await this.#options.messaging.uploadFile(envelope.media.localPath)).mediaUrl
+        ? (await this.#options.messaging.uploadFile(
+            await confinedPath(envelope.media.localPath, this.#options.outboundMediaRoots ?? [this.#options.mediaRoot]),
+          )).mediaUrl
         : envelope.media.url;
       await this.#reply(job, {
         mediaUrl,
@@ -334,6 +351,7 @@ export class AgentWorker {
             } }
           : {}),
       });
+      if (controller.signal.aborted) throw new CodexRunnerError("aborted", "Codex turn was cancelled");
       this.#options.store.setCodexThreadId(thread, result.threadId, this.#now());
       if (result.threadReset) this.#options.logger.warn("codex_thread_reset", { handle: message.handle, thread });
 
