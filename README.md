@@ -2,9 +2,7 @@
 
 **A Codex agent that lives on your Mac. Text it like a personal assistant.**
 
-![Text your Mac: a laptop running a terminal and a phone showing an iMessage conversation](docs/hero.jpg)
-
-It runs on your own computer, gets your texts over iMessage/SMS, and does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at your Mac, it can do while you're out.
+It's a small setup that puts Codex on your own machine and wires it to your phone. You text it over iMessage/SMS and it does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at your Mac, it can do while you're out.
 
 ```text
 you:    is the deploy done? restart nginx if so
@@ -28,7 +26,7 @@ agent:  set. first one monday 8:00.
 
 ---
 
-## Setup (about 10 minutes)
+## Setup (under 5 minutes)
 
 ### 1. Codex CLI, logged in
 
