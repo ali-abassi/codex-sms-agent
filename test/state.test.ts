@@ -42,7 +42,7 @@ afterEach(() => {
 describe("StateStore", () => {
   it("deduplicates provider handles and derives stable thread keys", () => {
     expect(threadKey(message("sender-thread"))).toBe("+15550000001");
-    expect(threadKey(message("group-thread", { groupId: " group-7 " }))).toBe("group-7");
+    expect(threadKey(message("group-thread", { groupId: "group-7" }))).toBe("+15550000001");
 
     const store = new StateStore(databasePath());
     try {

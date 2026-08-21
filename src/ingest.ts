@@ -45,6 +45,10 @@ export class IngestionService {
       });
       return "ignored";
     }
+    if (message.groupId.trim().length > 0) {
+      this.#options.logger.info("message_ignored", { handle: message.handle, reason: "group_chat" });
+      return "ignored";
+    }
     if (source === "reconcile" && message.dateSent < this.#options.activeAfter) {
       return "ignored";
     }

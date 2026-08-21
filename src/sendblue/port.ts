@@ -24,13 +24,6 @@ export function createMessagingPort(client: SendblueClient): MessagingPort {
       mediaUrl: input.mediaUrl,
       ...(input.replyTo ? { replyTo: { messageHandle: input.replyTo } } : {}),
     })),
-    sendGroup: async (input) => accepted(await client.sendGroupMessage({
-      groupId: input.groupId,
-      fromNumber: input.fromNumber,
-      content: input.content,
-      mediaUrl: input.mediaUrl,
-      ...(input.replyTo ? { replyTo: { messageHandle: input.replyTo } } : {}),
-    })),
     sendReaction: (input) => client.sendReaction(input),
     sendCarousel: async (input) => accepted(await client.sendCarousel({
       number: input.number,

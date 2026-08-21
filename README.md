@@ -16,7 +16,8 @@ agent:  set. first one tomorrow 8am.
 ```
 
 - Built on the official `@openai/codex-sdk`, using your existing ChatGPT plan (`codex login`). No API key.
-- Remembers context per conversation. Group chats get their own memory.
+- Remembers context across texts, so you can say "now do the same for staging".
+- Direct messages only. Group chats are ignored on purpose.
 - Send it photos and screenshots. It sends back text, images, files, reactions.
 - Ships **barebones**: Codex + a shell. You add the skills and tools you want (see [Customize](#customize-it)).
 
@@ -113,7 +114,7 @@ Just text. No syntax. A few commands exist for when you need them:
 | Text | Does |
 |---|---|
 | `/status` | Is it up, what's it doing, what's queued |
-| `/clear` | Stop the current task and forget this conversation's context |
+| `/clear` | Stop the current task and forget the conversation so far |
 | `/restart` | Stop everything and restart the agent |
 | `/help` | List these |
 
@@ -190,14 +191,14 @@ If you've already taught Codex how to work on your machine, the SMS agent inheri
 | `codexModel` | `gpt-5.6-sol` | Any model your Codex login offers |
 | `codexReasoningEffort` | `medium` | `minimal` to `max` |
 | `codexTimeoutMs` | 2 hours | Max per task. Long tasks are fine |
-| `maxConcurrency` | 1 | Tasks in parallel across *different* conversations |
+| `maxConcurrency` | 1 | Tasks in parallel across *different* senders. One sender is always sequential |
 | `pollIntervalMs` | 60000 | Fallback polling interval |
 
 ---
 
 ## How it works, briefly
 
-Text arrives (webhook or poll) → dropped unless it's from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that conversation's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
+Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
 
 If the Mac reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Codex produces garbage, you get bounded plain text, never an executed action. Logs contain event names and masked phone numbers, never message content or credentials.
 

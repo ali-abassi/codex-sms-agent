@@ -73,6 +73,7 @@ describe("IngestionService", () => {
 
     expect(ingestion.ingest(message("line", { sendblueNumber: "+15559999999" }), "webhook")).toBe("ignored");
     expect(ingestion.ingest(message("sender", { fromNumber: "+15559999999" }), "webhook")).toBe("ignored");
+    expect(ingestion.ingest(message("group", { groupId: "group-1" }), "webhook")).toBe("ignored");
     expect(ingestion.ingest(message("empty", { content: "" }), "webhook")).toBe("ignored");
     expect(ingestion.ingest(message("old", { dateSent: 1_000 }), "reconcile")).toBe("ignored");
     expect(state.claimNext(50_000)).toBeUndefined();

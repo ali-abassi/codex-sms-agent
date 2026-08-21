@@ -54,7 +54,6 @@ function messaging() {
     markRead: vi.fn(async () => ({})),
     setTyping: vi.fn(async () => ({})),
     sendDirect: vi.fn(async () => ({ messageHandle: "outbound", status: "QUEUED" })),
-    sendGroup: vi.fn(async () => ({ messageHandle: "group-outbound", status: "QUEUED" })),
     sendReaction: vi.fn(async () => ({})),
     sendCarousel: vi.fn(async () => ({ messageHandle: "carousel", status: "QUEUED" })),
     uploadFile: vi.fn(async () => ({ mediaUrl: "https://storage.sendblue.co/uploaded.png" })),
@@ -126,6 +125,7 @@ describe("AgentWorker", () => {
   it("gives Codex thread-scoped routine controls for natural-language scheduling", async () => {
     const test = harness(codexResult("session-routine", { bubbles: ["set."] }), {
       routineCliPath: "/app/dist/cli.js",
+      nodePath: "/opt/node/bin/node",
       stateDatabasePath: "/state/agent.sqlite",
     });
     test.store.enqueue(message("natural-routine", { content: "check the build every two hours" }), "webhook", 1);
@@ -137,7 +137,7 @@ describe("AgentWorker", () => {
         CODEX_SMS_STATE_DB: "/state/agent.sqlite",
         CODEX_SMS_THREAD_KEY: "+15550000002",
       },
-      prompt: expect.stringMatching(/node "\/app\/dist\/cli\.js" routine add --every <interval> --task <task>[\s\S]*routine delete --id <id>/),
+      prompt: expect.stringMatching(/"\/opt\/node\/bin\/node" "\/app\/dist\/cli\.js" routine add --every <interval> --task <task>[\s\S]*routine delete --id <id>/),
     }));
     expect(test.store.getThreadTarget("+15550000002")?.fromNumber).toBe("+15550000002");
     test.store.close();
@@ -188,24 +188,6 @@ describe("AgentWorker", () => {
     expect(test.sendblue.uploadFile).toHaveBeenCalledWith("/tmp/image.png");
     expect((test.sendblue.sendCarousel as any).mock.calls[0][0]).not.toHaveProperty("replyTo");
     expect(test.sendblue.sendDirect).toHaveBeenCalledTimes(2);
-    test.store.close();
-  });
-
-  it("uses group reply transport and skips unsupported direct typing signals", async () => {
-    const test = harness(codexResult("session-group", { text: "Group reply" }));
-    test.store.enqueue(message("group", {
-      groupId: "group-1",
-      participants: ["+15550000002", "+15550000003"],
-    }), "webhook", 1);
-
-    await test.worker.runOnce();
-
-    expect(test.sendblue.markRead).not.toHaveBeenCalled();
-    expect(test.sendblue.setTyping).not.toHaveBeenCalled();
-    expect(test.sendblue.sendGroup).toHaveBeenCalledWith(expect.objectContaining({
-      groupId: "group-1",
-      content: "Group reply",
-    }));
     test.store.close();
   });
 

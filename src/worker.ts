@@ -23,13 +23,6 @@ export type MessagingPort = {
     mediaUrl?: string;
     replyTo?: string;
   }): Promise<AcceptedSend>;
-  sendGroup(input: {
-    groupId: string;
-    fromNumber: string;
-    content?: string;
-    mediaUrl?: string;
-    replyTo?: string;
-  }): Promise<AcceptedSend>;
   sendReaction(input: {
     fromNumber: string;
     messageHandle: string;
@@ -57,6 +50,8 @@ export type AgentWorkerOptions = {
   fallbackText?: string;
   requestRestart?: () => void;
   routineCliPath?: string;
+  /** Absolute node binary for the routine commands shown to Codex; bare "node" is not on launchd's PATH for nvm/volta installs. */
+  nodePath?: string;
   stateDatabasePath?: string;
   /** Static facts reported by /status. */
   status?: () => { mode: string; model: string };
@@ -76,14 +71,15 @@ export function controlCommandFor(content: string): ControlCommand | undefined {
 
 export type AbortReason = "cancelled" | "shutdown";
 
-function promptFor(job: InboundJob, attachments: string[], routineCliPath?: string): string {
+function promptFor(job: InboundJob, attachments: string[], routineCliPath?: string, nodePath = process.execPath): string {
   const message = job.message;
+  const cli = `${JSON.stringify(nodePath)} ${JSON.stringify(routineCliPath)}`;
   const localControl = routineCliPath
     ? [
         "Local routine control for this exact SMS thread:",
-        `node ${JSON.stringify(routineCliPath)} routine add --every <interval> --task <task>`,
-        `node ${JSON.stringify(routineCliPath)} routine list`,
-        `node ${JSON.stringify(routineCliPath)} routine delete --id <id>`,
+        `${cli} routine add --every <interval> --task <task>`,
+        `${cli} routine list`,
+        `${cli} routine delete --id <id>`,
         "Intervals use m, h, d, or w. Use these commands yourself when the request is naturally about recurring work.",
       ].join("\n")
     : undefined;
@@ -96,9 +92,6 @@ function promptFor(job: InboundJob, attachments: string[], routineCliPath?: stri
         handle: message.handle,
         content: message.content,
         service: message.service,
-        isGroup: Boolean(message.groupId),
-        groupId: message.groupId || undefined,
-        participants: message.participants,
         replyTo: message.replyTo,
         receivedAt: new Date(message.dateSent).toISOString(),
       },
@@ -169,13 +162,6 @@ export class AgentWorker {
       ...(input.mediaUrl !== undefined ? { mediaUrl: input.mediaUrl } : {}),
       ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
     };
-    if (message.groupId) {
-      return this.#options.messaging.sendGroup({
-        groupId: message.groupId,
-        fromNumber: this.#options.sendblueNumber,
-        ...payload,
-      });
-    }
     return this.#options.messaging.sendDirect({
       number: message.fromNumber,
       fromNumber: this.#options.sendblueNumber,
@@ -253,7 +239,6 @@ export class AgentWorker {
     }
 
     if (envelope.carousel) {
-      if (job.message.groupId) throw new Error("Carousels are not supported in group threads");
       await this.#options.messaging.sendCarousel({
         number: job.message.fromNumber,
         fromNumber: this.#options.sendblueNumber,
@@ -274,7 +259,6 @@ export class AgentWorker {
 
   async #process(job: InboundJob): Promise<void> {
     const { message } = job;
-    const direct = !message.groupId;
     const thread = threadKey(message);
     const progress = { accepted: 0 };
     let finalOutcome = false;
@@ -283,7 +267,7 @@ export class AgentWorker {
     const controller = new AbortController();
 
     const refreshTyping = async () => {
-      if (!direct || finished) return;
+      if (finished) return;
       await this.#options.messaging.setTyping({
         number: message.fromNumber,
         fromNumber: this.#options.sendblueNumber,
@@ -305,17 +289,15 @@ export class AgentWorker {
       }
       this.#inflight.set(thread, controller);
 
-      if (direct) {
-        await Promise.allSettled([
-          this.#options.messaging.markRead({
-            number: message.fromNumber,
-            fromNumber: this.#options.sendblueNumber,
-          }),
-          refreshTyping(),
-        ]);
-        typingTimer = setInterval(refreshTyping, this.#options.typingRefreshMs);
-        typingTimer.unref?.();
-      }
+      await Promise.allSettled([
+        this.#options.messaging.markRead({
+          number: message.fromNumber,
+          fromNumber: this.#options.sendblueNumber,
+        }),
+        refreshTyping(),
+      ]);
+      typingTimer = setInterval(refreshTyping, this.#options.typingRefreshMs);
+      typingTimer.unref?.();
 
       const attachments: string[] = [];
       const images: string[] = [];
@@ -341,7 +323,7 @@ export class AgentWorker {
       const priorThread = this.#options.store.getCodexThreadId(thread);
       let result: CodexTurnResult;
       result = await this.#options.codex.run({
-        prompt: promptFor(job, attachments, this.#options.routineCliPath),
+        prompt: promptFor(job, attachments, this.#options.routineCliPath, this.#options.nodePath),
         ...(priorThread ? { threadId: priorThread } : {}),
         images,
         signal: controller.signal,
@@ -401,13 +383,11 @@ export class AgentWorker {
       finished = true;
       if (this.#inflight.get(thread) === controller) this.#inflight.delete(thread);
       if (typingTimer) clearInterval(typingTimer);
-      if (direct) {
-        await this.#options.messaging.setTyping({
-          number: message.fromNumber,
-          fromNumber: this.#options.sendblueNumber,
-          state: "stop",
-        }).catch(() => undefined);
-      }
+      await this.#options.messaging.setTyping({
+        number: message.fromNumber,
+        fromNumber: this.#options.sendblueNumber,
+        state: "stop",
+      }).catch(() => undefined);
     }
   }
 }
