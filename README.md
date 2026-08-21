@@ -11,8 +11,8 @@ agent:  yep, landed at 14:02. nginx restarted, /health is 200.
 you:    make me a python script that renames everything in ~/Downloads by date
 agent:  done, ~/bin/rename_by_date.py. dry-run by default, --apply to commit.
 
-you:    every weekday at 8 text me what's on my calendar
-agent:  set. first one monday 8:00.
+you:    every morning at 7, text me if any disk is over 80% full
+agent:  set. first check tomorrow at 7:00.
 ```
 
 - Built on the official `@openai/codex-sdk`, running through your existing `codex login`.
@@ -55,7 +55,7 @@ It's about 4k lines of plain TypeScript with no framework ceremony. Read it, for
 
 **Three things to have first:**
 
-1. **A Sendblue account.** [sendblue.com](https://sendblue.com) gives you a free number to start. You need its **API Key ID**, **API Secret Key**, and the number itself in E.164 form (`+15551234567`).
+1. **A Sendblue number.** [Sendblue](https://sendblue.com) is the SMS/iMessage provider — it gives you a real phone number with an API behind it, so the agent has its own line instead of hijacking your personal iMessage. Sign up, grab the free number, and copy the **API Key ID**, **API Secret Key**, and the number in E.164 form (`+15551234567`).
 2. **Tailscale**, so Sendblue can reach the machine. ([tailscale.com/download](https://tailscale.com/download) — ngrok works too.)
 3. **Codex CLI, signed in.** `npm install -g @openai/codex && codex login`, then confirm:
    ```bash
@@ -125,7 +125,7 @@ If `npm link` fails with `EACCES`, your Node is installed system-wide; either in
 
 `setup` asks for your Sendblue key and secret, your Sendblue number, **your** phone number(s) (the ones allowed to control the machine), your first name, a working directory (accept the default), a tunnel URL (leave blank for now), and the startup mode (**shadow**). It writes `~/.config/codex-sms-agent/config.json` at mode 0600.
 
-New to Sendblue? `npx -y @sendblue/cli@latest sandbox init` gets you going without the dashboard. Existing account? `sendblue login`, then `sendblue show-keys` and `sendblue lines`.
+Prefer the CLI to the dashboard? `sendblue login`, then `sendblue show-keys` and `sendblue lines`.
 
 **Open a tunnel.** Sendblue delivers incoming texts to an HTTPS URL; the agent listens on `localhost:8787`.
 

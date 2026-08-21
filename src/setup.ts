@@ -47,8 +47,8 @@ export async function runSetupWizard(options: {
   const output = options.output ?? process.stdout;
   const configPath = options.configPath ?? "~/.config/codex-sms-agent/config.json";
   output.write("Codex SMS Agent setup\n\n");
-  output.write("New Sendblue user? Run: npx -y @sendblue/cli@latest sandbox init\n");
-  output.write("Existing account? Run: sendblue login, sendblue show-keys, sendblue lines\n\n");
+  output.write("Need your Sendblue keys? Grab them from the dashboard, or run:\n");
+  output.write("  sendblue login, then sendblue show-keys and sendblue lines\n\n");
 
   const sendblueApiKey = await password({ message: "Sendblue API key", mask: "*" });
   const sendblueApiSecret = await password({ message: "Sendblue API secret", mask: "*" });
