@@ -2,7 +2,7 @@
 
 **A Codex agent that lives on your Mac. Text it like a personal assistant.**
 
-It's a small setup that puts Codex on your own machine and wires it to your phone. You text it over iMessage/SMS and it does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at your Mac, it can do while you're out.
+It's a small, deliberately simple framework that puts Codex on a machine you own — MacBook, Mac mini, or a VM you leave running — and wires it to your phone. You text it over iMessage/SMS and it does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at that machine, it can do while you're out.
 
 ```text
 you:    is the deploy done? restart nginx if so
@@ -20,9 +20,33 @@ agent:  set. first one monday 8:00.
 - Remembers context across texts, so you can say "now do the same for staging".
 - Direct messages only. Group chats are ignored on purpose.
 - Send it photos and screenshots. It sends back text, images, files, reactions.
-- Ships **barebones**: Codex + a shell. You add the skills and tools you want (see [Customize](#customize-it)).
+- Ships **barebones on purpose**: the messaging plumbing is done, the agent's abilities are yours to add (see [Customize](#customize-it)).
 
 > **Security, plainly:** whoever is on the allowlist has full, unsandboxed control of your Mac over text. Only allowlist yourself. Use a dedicated Sendblue number. Details in [SECURITY.md](SECURITY.md).
+
+---
+
+## What's built, what's yours
+
+The whole point is that the boring, fiddly half is finished and the interesting half is left open. Two dependencies do the heavy lifting — **Sendblue** for the messaging transport and the **Codex SDK** for the agent — and this repo is the thin, readable layer between them that makes texting a computer actually feel good.
+
+**Handled for you, so the chat feels smooth and holds up:**
+
+- **Threads.** One Codex thread per sender, resumed on every text, so context carries across days. If a thread can't be resumed, it starts a fresh one instead of erroring at you.
+- **Typing indicators and read receipts.** Your text gets marked read immediately; the typing bubble goes up while Codex works and refreshes every ~25s, so a three-minute task doesn't look like a dead line. Cleared the moment the reply lands.
+- **A real queue.** Messages land in SQLite, deduplicated, and run one turn at a time per sender so texts never trample each other (`maxConcurrency` lets different senders run in parallel). Reboot mid-task or kill the agent mid-task and the job is re-queued, not lost.
+- **Delivery that retries.** Replies go out as up to 4 bubbles, with optional reaction, image, file, or carousel. If Sendblue is down when a reply is ready, it's held and retried with backoff for ~15 minutes — it never re-runs Codex and never double-texts you.
+- **A validated envelope.** Codex answers in a JSON envelope the host checks before sending. Garbage output becomes bounded plain text, never an executed action.
+- **The front door.** Webhook or polling, direct messages only, allowlist enforced, group chats ignored, attachments in and out, old jobs and downloads pruned on a schedule.
+- **Routines.** Ask for recurring work in plain words and it becomes a durable schedule that survives restarts. No cron to write.
+
+**Yours to build** — three layers, none of which require touching this repo's code:
+
+- `AGENTS.md` — who you are, what it's allowed to do, how it should talk.
+- Tools and actions — a shell script, another coding agent, a browser, Mac control, an API. Anything Codex can invoke.
+- Codex skills and MCP servers.
+
+It's about 4k lines of plain TypeScript with no framework ceremony. Read it, fork it, rip parts out — [Customize it](#customize-it) is the map.
 
 ---
 
