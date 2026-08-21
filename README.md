@@ -105,6 +105,39 @@ codex-sms-agent service install    # starts at login, restarts on crash, survive
 
 Logs go to `~/.local/share/codex-sms-agent/logs/agent.log`. `codex-sms-agent service uninstall` removes it.
 
+### 7. Keep the Mac awake
+
+A sleeping Mac can't answer texts or run routines. Pick one:
+
+**Simplest:** System Settings → Battery (or Energy) → turn on *Prevent automatic sleeping when the display is off* (laptops: under Options, while on power adapter).
+
+**From the terminal, permanent:**
+
+```bash
+sudo pmset -c sleep 0 disablesleep 1      # never sleep while plugged in
+sudo pmset -c displaysleep 10             # display can still turn off
+```
+
+**`caffeinate` as a LaunchAgent** (no sudo, survives login, easy to remove):
+
+```bash
+cat > ~/Library/LaunchAgents/local.caffeinate.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.caffeinate</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/caffeinate</string><string>-dimsu</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+PLIST
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.caffeinate.plist
+```
+
+Remove later with `launchctl bootout gui/$(id -u)/local.caffeinate && rm ~/Library/LaunchAgents/local.caffeinate.plist`.
+
+Either way, keep it plugged in. Check with `pmset -g assertions` (you should see `PreventUserIdleSystemSleep`).
+
 ---
 
 ## Talk to it
@@ -118,7 +151,18 @@ Just text. No syntax. A few commands exist for when you need them:
 | `/restart` | Stop everything and restart the agent |
 | `/help` | List these |
 
-"Check the build every 2 hours", "stop checking the build", "what routines do I have" all work in plain words.
+### Routines (built in, nothing to install)
+
+Recurring work is part of the box. Say it in plain words and the agent creates a durable schedule in its SQLite store:
+
+```text
+you:    every weekday at 8 text me what's on my calendar
+you:    check ~/code/acme-api's CI every 2 hours and only text me if it's red
+you:    what routines do I have
+you:    stop the CI one
+```
+
+Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Intervals go from 1 minute to 365 days.
 
 ---
 
