@@ -1,6 +1,6 @@
 {
   "name": "codex-sms-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Text an autonomous Codex agent that runs on your own computer over iMessage, RCS, or SMS.",
   "type": "module",
   "license": "MIT",

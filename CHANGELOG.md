@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-21
+
 ### Added
 - Clock-aligned routines: `--at HH:MM` and `--days weekdays|mon,wed|...` for daily/weekly intervals (local time)
 - Delivery retry: a finished turn's envelope is cached and re-sent with backoff during Sendblue outages (6 attempts, ~15 min) instead of re-running Codex or texting a "snag"
