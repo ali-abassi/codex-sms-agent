@@ -5,14 +5,19 @@
 It's a small, deliberately simple framework that puts Codex on a machine you own — your laptop, a spare Mac mini, a VM on Railway or anywhere else — and wires it to your phone. You text it over iMessage/SMS and it does the work: runs commands, writes code, fixes things, moves files, opens apps, checks on stuff, and texts you back. Anything you could do sitting at that machine, it can do while you're out.
 
 ```text
-you:    is the deploy done? restart nginx if so
-agent:  yep, landed at 14:02. nginx restarted, /health is 200.
+you:    i have an idea for a habit tracker app. build me an mvp and send it my way
+agent:  built it at ~/code/streaks — next + sqlite, tests pass. running on :3000.
+        [screenshot of the app]
 
-you:    make me a python script that renames everything in ~/Downloads by date
-agent:  done, ~/bin/rename_by_date.py. dry-run by default, --apply to commit.
+you:    send me a screenshot of my desktop
+agent:  [image]
 
-you:    every morning at 7, text me if any disk is over 80% full
-agent:  set. first check tomorrow at 7:00.
+you:    has my claude code session finished?
+agent:  yep, 11 minutes ago. auth refactor, 14 files, tests green. want the diff?
+
+you:    any recent emails that need my attention?
+agent:  three. contract from legal needs your signature, a stripe payment failed,
+        and dana wants to move thursday's call.
 ```
 
 - Built on the official `@openai/codex-sdk`, running through your existing `codex login`.
@@ -294,12 +299,33 @@ Ask me before buying, sending, posting, or deleting through a browser.
 | [Hammerspoon](https://www.hammerspoon.org/) | `brew install --cask hammerspoon`, enable the `hs` CLI from its console (`hs.ipc.cliInstall()`) | Windows, apps, hotkeys, focus, audio, displays, all from `hs -c '<lua>'` |
 | Shortcuts | built in | `shortcuts run "<name>"` |
 | AppleScript | built in | `osascript -e '...'` for Mail, Calendar, Notes, Music, Finder |
+| `screencapture` | built in | `screencapture -x <file>` into its media dir, and it can text you the picture |
 
 ```markdown
 # Mac control
 Hammerspoon is installed; use `hs -c` for windows and apps. `shortcuts run` for my Shortcuts.
 `osascript` for app scripting. Verify the result before reporting it.
 ```
+
+#### Email, calendar, and docs
+
+Google's own [Workspace CLI](https://github.com/googleworkspace/cli) is the cleanest way to give it your inbox and calendar. It covers Gmail, Calendar, Drive, Docs, Sheets, and Chat behind one command, returns structured JSON, and was built with agents in mind.
+
+```bash
+npm install -g @googleworkspace/cli
+gws auth setup     # one interactive OAuth flow, in your terminal
+```
+
+Then in `AGENTS.md`:
+
+```markdown
+# Email and calendar
+`gws` is authenticated to my Google account. Use it for Gmail, Calendar, Drive, and Docs;
+every command returns JSON. Read freely. Ask me before sending, replying, deleting,
+or accepting an invite — draft it and text me the draft first.
+```
+
+That's what turns "any emails I should look at?" and "what's on my calendar tomorrow?" into real answers.
 
 #### Everything else
 

@@ -29,6 +29,10 @@ A good brief states: the goal, the exact files or directory, what "done" looks l
 - `osascript` for app scripting (Mail, Calendar, Notes, Music). Check the result before reporting it.
 - `open -a <App>` to launch apps, `open <file or url>` to open things.
 
+# Email and calendar
+- `gws` is authenticated to my Google account: Gmail, Calendar, Drive, Docs, Sheets, Chat. Every command returns JSON.
+- Read freely. Ask me before sending, replying, deleting, or accepting an invite — draft it and text me the draft first.
+
 # Other tools
 - `gh` for GitHub. I'm @myhandle.
 - `brew` for installs, but ask before installing anything new.
