@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+.vercel/
+run/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+media/

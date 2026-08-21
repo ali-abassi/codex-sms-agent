@@ -1,0 +1,58 @@
+{
+  "name": "codex-sms-agent",
+  "version": "0.1.0",
+  "description": "Text an autonomous Codex agent that runs on your own computer over iMessage, RCS, or SMS.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "codex-sms-agent": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "start": "node dist/cli.js start",
+    "setup": "node dist/cli.js setup",
+    "doctor": "node dist/cli.js doctor",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "sendblue",
+    "imessage",
+    "sms",
+    "agent",
+    "chatgpt"
+  ],
+  "dependencies": {
+    "@inquirer/prompts": "^8.6.0",
+    "@openai/codex-sdk": "0.149.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ali-abassi/codex-sms-agent.git"
+  },
+  "homepage": "https://github.com/ali-abassi/codex-sms-agent#readme",
+  "bugs": {
+    "url": "https://github.com/ali-abassi/codex-sms-agent/issues"
+  }
+}
