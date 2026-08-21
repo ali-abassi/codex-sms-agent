@@ -1,3 +1,5 @@
+import { E164_PATTERN } from "./domain/phone.js";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type Logger = {
@@ -10,7 +12,7 @@ export type Logger = {
 type LogSink = (line: string) => void;
 
 const sensitiveKey = /(secret|token|credential|authorization|api.?key|payload|content|prompt|stdout|stderr)/i;
-const e164 = /^\+[1-9]\d{7,14}$/;
+const e164 = E164_PATTERN;
 
 function maskPhone(value: string): string {
   return `${value.slice(0, 2)}***${value.slice(-4)}`;

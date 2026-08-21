@@ -3,7 +3,8 @@ import { join, relative, isAbsolute } from "node:path";
 import type { InboundJob, StateStore } from "./state/store.js";
 import { threadKey } from "./domain/message.js";
 import { CodexRunnerError, type CodexRunner, type CodexTurnResult } from "./codex/runner.js";
-import type { FinalEnvelope } from "./codex/protocol.js";
+import { finalEnvelopeSchema, type FinalEnvelope } from "./codex/protocol.js";
+import { isTransientSendblueError } from "./sendblue/client.js";
 import { downloadInboundMedia } from "./media.js";
 import type { Logger } from "./log.js";
 
@@ -22,7 +23,6 @@ export type MessagingPort = {
     fromNumber: string;
     content?: string;
     mediaUrl?: string;
-    replyTo?: string;
   }): Promise<AcceptedSend>;
   sendReaction(input: {
     fromNumber: string;
@@ -34,14 +34,13 @@ export type MessagingPort = {
     number: string;
     fromNumber: string;
     mediaUrls: string[];
-    replyTo?: string;
   }): Promise<AcceptedSend>;
   uploadFile(path: string): Promise<{ mediaUrl: string }>;
 };
 
 export type AgentWorkerOptions = {
   store: StateStore;
-  codex: Pick<CodexRunner, "run">;
+  codex: Pick<CodexRunner, "run"> & Partial<Pick<CodexRunner, "operatorInstructionsDigest">>;
   messaging: MessagingPort;
   sendblueNumber: string;
   mediaRoot: string;
@@ -85,6 +84,14 @@ export function controlCommandFor(content: string): ControlCommand | undefined {
 
 export type AbortReason = "cancelled" | "shutdown";
 
+export const MAX_DELIVERY_ATTEMPTS = 6;
+export const LAST_TURN_OK_KEY = "daemon.last_turn_ok_at";
+
+/** 30s, 1m, 2m, 4m, 8m: a Sendblue outage of ~15 minutes is absorbed without losing the reply. */
+export function deliveryBackoffMs(attemptCount: number): number {
+  return Math.min(30_000 * 2 ** Math.max(0, attemptCount - 1), 8 * 60_000);
+}
+
 function promptFor(job: InboundJob, attachments: string[], routineCliPath?: string, nodePath = process.execPath): string {
   const message = job.message;
   const cli = `${JSON.stringify(nodePath)} ${JSON.stringify(routineCliPath)}`;
@@ -94,7 +101,8 @@ function promptFor(job: InboundJob, attachments: string[], routineCliPath?: stri
         `${cli} routine add --every <interval> --task <task>`,
         `${cli} routine list`,
         `${cli} routine delete --id <id>`,
-        "Intervals use m, h, d, or w. Use these commands yourself when the request is naturally about recurring work.",
+        `${cli} routine add --every 1d --at 08:00 --days weekdays --task <task>`,
+        "Intervals use m, h, d, or w. --at HH:MM (24h, local time) and --days (mon,tue,... | weekdays | weekends) need a whole-day interval. Use these commands yourself when the request is naturally about recurring work; never ask for slash syntax.",
       ].join("\n")
     : undefined;
   return [
@@ -106,7 +114,6 @@ function promptFor(job: InboundJob, attachments: string[], routineCliPath?: stri
         handle: message.handle,
         content: message.content,
         service: message.service,
-        replyTo: message.replyTo,
         receivedAt: new Date(message.dateSent).toISOString(),
       },
       attachments,
@@ -168,13 +175,12 @@ export class AgentWorker {
 
   async #reply(
     job: InboundJob,
-    input: { content?: string; mediaUrl?: string; replyTo?: string },
+    input: { content?: string; mediaUrl?: string },
   ): Promise<AcceptedSend> {
     const message = job.message;
     const payload = {
       ...(input.content !== undefined ? { content: input.content } : {}),
       ...(input.mediaUrl !== undefined ? { mediaUrl: input.mediaUrl } : {}),
-      ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
     };
     return this.#options.messaging.sendDirect({
       number: message.fromNumber,
@@ -224,8 +230,6 @@ export class AgentWorker {
   }
 
   async #dispatch(job: InboundJob, envelope: FinalEnvelope, progress: { accepted: number }): Promise<number> {
-    // Agent output belongs in the normal conversation, not an iMessage reply thread.
-    const replyTo = undefined;
     const accept = () => { progress.accepted += 1; };
 
     if (envelope.reaction) {
@@ -250,7 +254,6 @@ export class AgentWorker {
       await this.#reply(job, {
         mediaUrl,
         content: envelope.media.caption,
-        replyTo,
       });
       accept();
     }
@@ -260,14 +263,12 @@ export class AgentWorker {
         number: job.message.fromNumber,
         fromNumber: this.#options.sendblueNumber,
         mediaUrls: envelope.carousel.urls,
-        ...(replyTo !== undefined ? { replyTo } : {}),
       });
       accept();
     }
 
-    const bubbles = envelope.bubbles ?? (envelope.text ? [envelope.text] : []);
-    for (const bubble of bubbles) {
-      await this.#reply(job, { content: bubble, replyTo });
+    for (const bubble of envelope.bubbles ?? []) {
+      await this.#reply(job, { content: bubble });
       accept();
     }
 
@@ -337,7 +338,20 @@ export class AgentWorker {
         { ...message, content: "", mediaUrl: undefined, replyTo: undefined, raw: {} },
         this.#now(),
       );
+      // A delivery retry replays the validated envelope instead of re-running Codex.
+      if (job.envelopeJson) {
+        const cached = finalEnvelopeSchema.safeParse(JSON.parse(job.envelopeJson));
+        if (cached.success) {
+          const accepted = await this.#dispatch(job, cached.data, progress);
+          finalOutcome = accepted > 0;
+          this.#options.store.markDone(job.id, this.#now());
+          this.#options.logger.info("message_delivered_on_retry", { handle: message.handle, attempt: job.attemptCount });
+          return;
+        }
+      }
+
       const priorThread = this.#options.store.getCodexThreadId(thread);
+      const digestBefore = await this.#options.codex.operatorInstructionsDigest?.();
       let result: CodexTurnResult;
       result = await this.#options.codex.run({
         prompt: promptFor(job, attachments, this.#options.routineCliPath, this.#options.nodePath),
@@ -354,10 +368,21 @@ export class AgentWorker {
       if (controller.signal.aborted) throw new CodexRunnerError("aborted", "Codex turn was cancelled");
       this.#options.store.setCodexThreadId(thread, result.threadId, this.#now());
       if (result.threadReset) this.#options.logger.warn("codex_thread_reset", { handle: message.handle, thread });
+      this.#options.store.saveEnvelope(job.id, JSON.stringify(result.envelope.envelope), this.#now());
+      this.#options.store.setMetadata(LAST_TURN_OK_KEY, new Date(this.#now()).toISOString(), this.#now());
 
       const accepted = await this.#dispatch(job, result.envelope.envelope, progress);
       finalOutcome = accepted > 0;
       if (!finalOutcome) throw new Error("Codex produced no visible messaging outcome");
+
+      // Tripwire: a turn that rewrote its own standing instructions is reported, never silent.
+      const digestAfter = await this.#options.codex.operatorInstructionsDigest?.();
+      if (digestBefore !== undefined && digestAfter !== undefined && digestBefore !== digestAfter) {
+        this.#options.logger.warn("operator_instructions_changed", { handle: message.handle, thread });
+        await this.#reply(job, {
+          content: "Heads up: my standing instructions file (AGENTS.md in my workspace) changed during that task. If you didn’t ask for that, take a look before I run again.",
+        }).catch(() => undefined);
+      }
       this.#options.store.markDone(job.id, this.#now());
       this.#options.logger.info("message_completed", {
         handle: message.handle,
@@ -375,6 +400,13 @@ export class AgentWorker {
           this.#options.store.markDone(job.id, this.#now());
         }
         this.#options.logger.info("message_aborted", { handle: message.handle, reason });
+        return;
+      }
+      // Provider trouble: keep the job and retry delivery later rather than texting a "snag".
+      if (isTransientSendblueError(error) && job.attemptCount < MAX_DELIVERY_ATTEMPTS) {
+        const delayMs = deliveryBackoffMs(job.attemptCount);
+        this.#options.store.retry(job.id, error, this.#now() + delayMs, this.#now());
+        this.#options.logger.warn("delivery_deferred", { handle: message.handle, attempt: job.attemptCount, retryInMs: delayMs });
         return;
       }
       // Something was already delivered; do not follow it with a "snag" text.

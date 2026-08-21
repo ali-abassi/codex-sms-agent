@@ -122,8 +122,6 @@ const httpsMediaSchema = z
 export const finalEnvelopeSchema = z
   .object({
     bubbles: z.array(textSchema).min(1).max(MAX_TEXT_BUBBLES).optional(),
-    // Accepted for graceful fallback and older saved sessions. New turns use bubbles.
-    text: textSchema.optional(),
     reaction: z
       .object({
         value: z.string().trim().min(1).max(32),
@@ -142,27 +140,13 @@ export const finalEnvelopeSchema = z
       })
       .strict()
       .optional(),
-    replyTo: handleSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.bubbles && value.text) {
-      context.addIssue({
-        code: "custom",
-        message: "Use bubbles or text, not both",
-      });
-    }
-    if (!value.bubbles && !value.text && !value.reaction && !value.media && !value.carousel) {
+    if (!value.bubbles && !value.reaction && !value.media && !value.carousel) {
       context.addIssue({
         code: "custom",
         message: "At least one host action is required",
-      });
-    }
-    if (value.replyTo && !value.bubbles && !value.text && !value.media && !value.carousel) {
-      context.addIssue({
-        code: "custom",
-        message: "replyTo requires a text, media, or carousel send",
-        path: ["replyTo"],
       });
     }
   });
@@ -212,9 +196,31 @@ function stripCannedPreamble(value: string): string {
   return stripped.charAt(0).toUpperCase() + stripped.slice(1);
 }
 
+/**
+ * The SDK schema forces every top-level key to be present (null when unused),
+ * while the host schema treats absence as "unused". Bridge the two, and tidy
+ * bubble text.
+ */
 function sanitizeCandidate(candidate: unknown): unknown {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
   const repaired = { ...(candidate as Record<string, unknown>) };
+  // Accept the legacy single-string form once more as a bubble.
+  if (typeof repaired.text === "string" && !Array.isArray(repaired.bubbles)) {
+    repaired.bubbles = [repaired.text];
+  }
+  delete repaired.text;
+  delete repaired.replyTo;
+  for (const key of ["reaction", "media", "carousel"] as const) {
+    const value = repaired[key];
+    if (value === null) {
+      delete repaired[key];
+      continue;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const cleaned = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, nested]) => nested !== null));
+      repaired[key] = cleaned;
+    }
+  }
   if (Array.isArray(repaired.bubbles)) {
     const bubbles = repaired.bubbles
       .filter((bubble): bubble is string => typeof bubble === "string")
@@ -224,9 +230,7 @@ function sanitizeCandidate(candidate: unknown): unknown {
       .slice(0, MAX_TEXT_BUBBLES);
     if (bubbles.length > 0) repaired.bubbles = bubbles;
     else delete repaired.bubbles;
-    if (repaired.bubbles) delete repaired.text;
   }
-  if (typeof repaired.text === "string") repaired.text = normalizeText(repaired.text);
   return repaired;
 }
 

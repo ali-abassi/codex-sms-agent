@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { input, password, select } from "@inquirer/prompts";
 import { DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT } from "./codex/runner.js";
+import { E164_PATTERN } from "./domain/phone.js";
 
 export type SetupConfig = {
   sendblueApiKey: string;
@@ -19,7 +20,7 @@ export type SetupConfig = {
   publicUrl?: string;
 };
 
-const e164 = /^\+[1-9]\d{7,14}$/;
+const e164 = E164_PATTERN;
 
 function expandHome(path: string): string {
   return path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(path);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -168,27 +169,6 @@ function isStaleThreadError(error: unknown): boolean {
   return /no saved session|(?:thread|session|rollout)[^\n]{0,80}?(?:not found|does not exist|no longer exists|could not be (?:found|resumed|loaded)|failed to (?:resume|load))/i.test(message);
 }
 
-function normalizeStructuredResponse(output: string): string {
-  try {
-    const candidate = JSON.parse(output) as Record<string, unknown>;
-    if (Array.isArray(candidate.bubbles) && candidate.bubbles.length === 0) delete candidate.bubbles;
-    for (const key of ["reaction", "media", "carousel"] as const) {
-      if (candidate[key] === null) {
-        delete candidate[key];
-        continue;
-      }
-      if (candidate[key] && typeof candidate[key] === "object" && !Array.isArray(candidate[key])) {
-        for (const [nestedKey, value] of Object.entries(candidate[key] as Record<string, unknown>)) {
-          if (value === null) delete (candidate[key] as Record<string, unknown>)[nestedKey];
-        }
-      }
-    }
-    return JSON.stringify(candidate);
-  } catch {
-    return output;
-  }
-}
-
 function metadataFor(turn: RunResult): CodexToolCallMetadata[] {
   return turn.items.flatMap((item): CodexToolCallMetadata[] => {
     if (item.type === "command_execution") {
@@ -220,6 +200,17 @@ export class CodexRunner {
     this.operatorName = options.operatorName?.trim() || DEFAULT_OPERATOR_NAME;
     this.#parentEnv = options.parentEnv ?? process.env;
     this.#createClient = options.createClient ?? ((clientOptions) => new Codex(clientOptions));
+  }
+
+  /**
+   * Digest of the operator-owned part of AGENTS.md (everything outside the
+   * managed block). Lets the host notice when a turn rewrote its own standing
+   * instructions.
+   */
+  async operatorInstructionsDigest(): Promise<string> {
+    const content = await readFile(join(this.workspace, "AGENTS.md"), "utf8").catch(() => "");
+    const operatorPart = content.replace(/<!-- codex-sms-agent:managed:start -->[\s\S]*?<!-- codex-sms-agent:managed:end -->/, "").trim();
+    return createHash("sha256").update(operatorPart).digest("hex");
   }
 
   /** Create the workspace and its AGENTS.md so operators can customize it before the first turn. */
@@ -294,7 +285,7 @@ export class CodexRunner {
       if (!thread.id || !isCodexThreadId(thread.id)) {
         throw new CodexRunnerError("invalid_response", "Codex returned no valid thread ID");
       }
-      const envelope = parseFinalEnvelope(normalizeStructuredResponse(turn.finalResponse));
+      const envelope = parseFinalEnvelope(turn.finalResponse);
       return {
         output: turn.finalResponse,
         envelope,

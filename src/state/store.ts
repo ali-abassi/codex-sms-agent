@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 
 import { threadKey, type InboundMessage } from "../domain/message.js";
+import { ALL_DAYS, nextRunAfter, validateSchedule, type Schedule } from "../domain/schedule.js";
+
+const SCHEMA_VERSION = 1;
 
 export type JobState = "pending" | "processing" | "done" | "failed";
 export type EnqueueSource = "webhook" | "reconcile";
@@ -18,6 +21,8 @@ export interface InboundJob {
   processingStartedAt?: number;
   finishedAt?: number;
   errorSummary?: string;
+  /** Validated envelope from a completed Codex turn whose delivery is being retried. */
+  envelopeJson?: string;
 }
 
 export interface EnqueueResult {
@@ -25,11 +30,10 @@ export interface EnqueueResult {
   job: InboundJob;
 }
 
-export interface Routine {
+export interface Routine extends Schedule {
   id: number;
   threadKey: string;
   task: string;
-  intervalMs: number;
   nextRunAt: number;
   createdAt: number;
 }
@@ -117,6 +121,21 @@ function toJob(row: Row): InboundJob {
     processingStartedAt: optionalNumber(row, "processing_started_at"),
     finishedAt: optionalNumber(row, "finished_at"),
     errorSummary: optionalString(row, "error_summary"),
+    envelopeJson: optionalString(row, "envelope_json"),
+  };
+}
+
+function toRoutine(row: Row): Routine {
+  const atMinute = optionalNumber(row, "at_minute");
+  return {
+    id: requiredNumber(row, "id"),
+    threadKey: requiredString(row, "thread_key"),
+    task: requiredString(row, "task"),
+    intervalMs: requiredNumber(row, "interval_ms"),
+    ...(atMinute === undefined ? {} : { atMinute }),
+    daysMask: optionalNumber(row, "days_mask") ?? ALL_DAYS,
+    nextRunAt: requiredNumber(row, "next_run_at"),
+    createdAt: requiredNumber(row, "created_at"),
   };
 }
 
@@ -189,10 +208,36 @@ export class StateStore {
           ON routines(next_run_at);
 
       `);
+      this.#migrate();
     } catch (error) {
       this.#database.close();
       throw error;
     }
+  }
+
+  #migrate(): void {
+    const row = this.#database.prepare("PRAGMA user_version").get();
+    let version = row ? requiredNumber(row, "user_version") : 0;
+    const columns = (table: string) => this.#database.prepare(`PRAGMA table_info(${table})`).all().map((entry) => requiredString(entry, "name"));
+    if (version < 1) {
+      // Version 1: delivery retry cache and clock-aligned routines. Guarded so
+      // databases created by this very constructor (already current) stay valid.
+      if (!columns("inbound_jobs").includes("envelope_json")) {
+        this.#database.exec("ALTER TABLE inbound_jobs ADD COLUMN envelope_json TEXT");
+      }
+      const routineColumns = columns("routines");
+      if (!routineColumns.includes("at_minute")) this.#database.exec("ALTER TABLE routines ADD COLUMN at_minute INTEGER");
+      if (!routineColumns.includes("days_mask")) {
+        this.#database.exec(`ALTER TABLE routines ADD COLUMN days_mask INTEGER NOT NULL DEFAULT ${ALL_DAYS}`);
+      }
+      version = 1;
+    }
+    this.#database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
+
+  schemaVersion(): number {
+    const row = this.#database.prepare("PRAGMA user_version").get();
+    return row ? requiredNumber(row, "user_version") : 0;
   }
 
   enqueue(message: InboundMessage, source: EnqueueSource, now: number): EnqueueResult {
@@ -271,6 +316,14 @@ export class StateStore {
     return Number(result.changes) === 1;
   }
 
+  /** Persist a validated envelope so a delivery retry can skip the Codex turn. */
+  saveEnvelope(jobId: number, envelopeJson: string, now: number): boolean {
+    const result = this.#database.prepare(`
+      UPDATE inbound_jobs SET envelope_json = ?, updated_at = ? WHERE id = ? AND state = 'processing'
+    `).run(nonEmpty(envelopeJson, "envelopeJson"), epoch(now, "now"), positiveId(jobId));
+    return Number(result.changes) === 1;
+  }
+
   retry(jobId: number, error: unknown, availableAt: number, now: number): boolean {
     epoch(now, "now");
     epoch(availableAt, "availableAt");
@@ -302,23 +355,6 @@ export class StateStore {
       positiveId(jobId),
     );
     return Number(result.changes) === 1;
-  }
-
-  recoverStaleProcessing(staleBefore: number, now: number): number {
-    epoch(staleBefore, "staleBefore");
-    epoch(now, "now");
-    const result = this.#database.prepare(`
-      UPDATE inbound_jobs
-      SET state = 'pending',
-          available_at = ?,
-          updated_at = ?,
-          processing_started_at = NULL,
-          finished_at = NULL,
-          error_summary = 'stale_processing_recovered'
-      WHERE state = 'processing'
-        AND processing_started_at <= ?
-    `).run(now, now, staleBefore);
-    return Number(result.changes);
   }
 
   /**
@@ -432,60 +468,53 @@ export class StateStore {
   createRoutineForThread(
     thread: string,
     task: string,
-    intervalMs: number,
+    schedule: Schedule | number,
     now: number,
   ): Routine {
     const target = this.getThreadTarget(thread);
     if (!target) throw new Error("No messaging target is registered for this thread");
-    return this.createRoutine(thread, target, task, intervalMs, now);
+    return this.createRoutine(thread, target, task, schedule, now);
   }
 
   createRoutine(
     thread: string,
     target: InboundMessage,
     task: string,
-    intervalMs: number,
+    scheduleOrInterval: Schedule | number,
     now: number,
   ): Routine {
-    if (!Number.isSafeInteger(intervalMs) || intervalMs < 60_000) {
-      throw new RangeError("intervalMs must be at least one minute");
-    }
-    const nextRunAt = epoch(now, "now") + intervalMs;
+    const schedule = validateSchedule(typeof scheduleOrInterval === "number"
+      ? { intervalMs: scheduleOrInterval, daysMask: ALL_DAYS }
+      : scheduleOrInterval);
+    const nextRunAt = nextRunAfter(epoch(now, "now"), schedule);
     const row = this.#database.prepare(`
-      INSERT INTO routines (thread_key, target_json, task, interval_ms, next_run_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      RETURNING id, thread_key, task, interval_ms, next_run_at, created_at
+      INSERT INTO routines (thread_key, target_json, task, interval_ms, at_minute, days_mask, next_run_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING id, thread_key, task, interval_ms, at_minute, days_mask, next_run_at, created_at
     `).get(
       nonEmpty(thread, "thread"),
       JSON.stringify(target),
       nonEmpty(task, "task"),
-      intervalMs,
+      schedule.intervalMs,
+      schedule.atMinute ?? null,
+      schedule.daysMask,
       nextRunAt,
       now,
     );
     if (!row) throw new Error("Routine was not created");
-    return {
-      id: requiredNumber(row, "id"),
-      threadKey: requiredString(row, "thread_key"),
-      task: requiredString(row, "task"),
-      intervalMs: requiredNumber(row, "interval_ms"),
-      nextRunAt: requiredNumber(row, "next_run_at"),
-      createdAt: requiredNumber(row, "created_at"),
-    };
+    return toRoutine(row);
   }
 
   listRoutines(thread: string): Routine[] {
     return this.#database.prepare(`
-      SELECT id, thread_key, task, interval_ms, next_run_at, created_at
+      SELECT id, thread_key, task, interval_ms, at_minute, days_mask, next_run_at, created_at
       FROM routines WHERE thread_key = ? ORDER BY id
-    `).all(nonEmpty(thread, "thread")).map((row) => ({
-      id: requiredNumber(row, "id"),
-      threadKey: requiredString(row, "thread_key"),
-      task: requiredString(row, "task"),
-      intervalMs: requiredNumber(row, "interval_ms"),
-      nextRunAt: requiredNumber(row, "next_run_at"),
-      createdAt: requiredNumber(row, "created_at"),
-    }));
+    `).all(nonEmpty(thread, "thread")).map(toRoutine);
+  }
+
+  countRoutines(): number {
+    const row = this.#database.prepare("SELECT COUNT(*) AS total FROM routines").get();
+    return row ? requiredNumber(row, "total") : 0;
   }
 
   deleteRoutine(thread: string, routineId: number): boolean {
@@ -502,26 +531,28 @@ export class StateStore {
     ).all(now);
     let queued = 0;
     for (const row of rows) {
-      const id = requiredNumber(row, "id");
-      const scheduledAt = requiredNumber(row, "next_run_at");
-      const intervalMs = requiredNumber(row, "interval_ms");
+      const routine = toRoutine(row);
+      const scheduledAt = routine.nextRunAt;
       const target = JSON.parse(requiredString(row, "target_json")) as InboundMessage;
-      const task = requiredString(row, "task");
       const message: InboundMessage = {
         ...target,
-        handle: `routine:${id}:${Math.trunc(scheduledAt)}`,
-        content: `[Scheduled routine #${id}] ${task}`,
+        handle: `routine:${routine.id}:${Math.trunc(scheduledAt)}`,
+        content: `[Scheduled routine #${routine.id}] ${routine.task}`,
         mediaUrl: undefined,
         replyTo: undefined,
         dateSent: now,
-        raw: { routineId: id, scheduledAt },
+        raw: { routineId: routine.id, scheduledAt },
       };
-      if (this.enqueue(message, "reconcile", now).inserted) queued += 1;
-      let nextRunAt = scheduledAt;
-      while (nextRunAt <= now) nextRunAt += intervalMs;
-      this.#database.prepare(
-        "UPDATE routines SET next_run_at = ? WHERE id = ?",
-      ).run(nextRunAt, id);
+      this.#database.exec("BEGIN");
+      try {
+        if (this.enqueue(message, "reconcile", now).inserted) queued += 1;
+        this.#database.prepare("UPDATE routines SET next_run_at = ? WHERE id = ?")
+          .run(nextRunAfter(now, routine, scheduledAt), routine.id);
+        this.#database.exec("COMMIT");
+      } catch (error) {
+        this.#database.exec("ROLLBACK");
+        throw error;
+      }
     }
     return queued;
   }

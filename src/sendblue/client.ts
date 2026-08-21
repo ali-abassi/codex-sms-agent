@@ -3,12 +3,13 @@ import { readFile, stat } from "node:fs/promises";
 
 import type { InboundMessage } from "../domain/message.js";
 import { normalizeV2Message } from "./normalize.js";
+import { E164_PATTERN } from "../domain/phone.js";
 
 export const SENDBLUE_API_BASE_URL = "https://api.sendblue.com";
 export const SENDBLUE_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 export const SENDBLUE_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
-const E164 = /^\+[1-9]\d{1,14}$/;
+const E164 = E164_PATTERN;
 
 export type SendblueErrorCode =
   | "VALIDATION_ERROR"
@@ -55,6 +56,13 @@ export class SendblueError extends Error {
       ...(this.field === undefined ? {} : { field: this.field }),
     };
   }
+}
+
+/** Errors worth retrying later: provider outages, rate limits, timeouts, network failures. */
+export function isTransientSendblueError(error: unknown): boolean {
+  if (!(error instanceof SendblueError)) return false;
+  if (error.code === "NETWORK_ERROR" || error.code === "TIMEOUT") return true;
+  return error.code === "HTTP_ERROR" && (error.status === 429 || (error.status ?? 0) >= 500);
 }
 
 export class SendblueValidationError extends SendblueError {

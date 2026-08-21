@@ -47,7 +47,8 @@ describe("loadConfig", () => {
       configPath: await configFile(),
       env: {
         ALLOWED_PHONES: "+15550000001, +15550000002",
-        PORT: "9999",
+        CODEX_SMS_AGENT_PORT: "9999",
+        PORT: "1234", // bare PORT is deliberately ignored: shells and PaaS set it
         CODEX_MODEL: "gpt-5.3-codex",
         CODEX_REASONING_EFFORT: "minimal",
       },

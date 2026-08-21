@@ -9,6 +9,8 @@ import { createLogger } from "./log.js";
 import { installUserService, uninstallUserService } from "./service.js";
 import { runSetupWizard } from "./setup.js";
 import { StateStore } from "./state/store.js";
+import { ALL_DAYS, describeSchedule, parseClockTime, parseDays } from "./domain/schedule.js";
+import { LAST_TURN_OK_KEY } from "./worker.js";
 
 const HELP = `Codex SMS Agent — text an autonomous Codex agent running on your computer
 
@@ -16,6 +18,7 @@ Usage:
   codex-sms-agent setup [--config PATH]
   codex-sms-agent doctor [--config PATH]
   codex-sms-agent start [--config PATH]
+  codex-sms-agent status [--config PATH]          # queue, routines, last success
   codex-sms-agent config [--config PATH]          # redacted
   codex-sms-agent webhook-secret [--config PATH]  # prints the value to paste into Sendblue
   codex-sms-agent tunnel [--config PATH]
@@ -102,30 +105,31 @@ async function routine(args: string[]): Promise<void> {
   const action = args[1];
   const store = new StateStore(databasePath);
   try {
+    const describe = (routine: ReturnType<typeof store.listRoutines>[number]) => ({
+      id: routine.id,
+      task: routine.task,
+      schedule: describeSchedule(routine),
+      intervalMs: routine.intervalMs,
+      ...(routine.atMinute === undefined ? {} : { atMinute: routine.atMinute }),
+      daysMask: routine.daysMask,
+      nextRunAt: new Date(routine.nextRunAt).toISOString(),
+    });
     if (action === "add") {
       const every = option(args, "--every");
       const task = option(args, "--task");
-      if (!every || !task) throw new Error("routine add requires --every and --task");
-      const created = store.createRoutineForThread(thread, task, routineInterval(every), Date.now());
-      process.stdout.write(`${JSON.stringify({
-        ok: true,
-        routine: {
-          id: created.id,
-          task: created.task,
-          intervalMs: created.intervalMs,
-          nextRunAt: created.nextRunAt,
-        },
-      })}\n`);
+      const at = option(args, "--at");
+      const days = option(args, "--days");
+      if (!every || !task) throw new Error("routine add requires --every and --task (optional: --at HH:MM, --days weekdays|mon,wed)");
+      const created = store.createRoutineForThread(thread, task, {
+        intervalMs: routineInterval(every),
+        ...(at === undefined ? {} : { atMinute: parseClockTime(at) }),
+        daysMask: days === undefined ? ALL_DAYS : parseDays(days),
+      }, Date.now());
+      process.stdout.write(`${JSON.stringify({ ok: true, routine: describe(created) })}\n`);
       return;
     }
     if (action === "list") {
-      const routines = store.listRoutines(thread).map(({ id, task, intervalMs, nextRunAt }) => ({
-        id,
-        task,
-        intervalMs,
-        nextRunAt,
-      }));
-      process.stdout.write(`${JSON.stringify({ ok: true, routines })}\n`);
+      process.stdout.write(`${JSON.stringify({ ok: true, routines: store.listRoutines(thread).map(describe) })}\n`);
       return;
     }
     if (action === "delete") {
@@ -155,8 +159,8 @@ async function service(args: string[]): Promise<void> {
     cliPath,
     configPath: path
       ? resolve(path)
-      : process.env.SMS_AGENT_CONFIG
-        ? resolve(process.env.SMS_AGENT_CONFIG)
+      : (process.env.CODEX_SMS_AGENT_CONFIG ?? process.env.SMS_AGENT_CONFIG)
+        ? resolve((process.env.CODEX_SMS_AGENT_CONFIG ?? process.env.SMS_AGENT_CONFIG)!)
         : join(homedir(), ".config", "codex-sms-agent", "config.json"),
     stateDir: config.stateDir,
   });
@@ -186,6 +190,28 @@ function zodIssues(value: unknown): Array<{ code: string; path: PropertyKey[]; m
   return Array.isArray(issues) ? issues as Array<{ code: string; path: PropertyKey[]; message: string }> : undefined;
 }
 
+async function status(args: string[]): Promise<void> {
+  const config = await loadConfig({ configPath: configPath(args) });
+  const store = new StateStore(join(config.stateDir, "state.sqlite"));
+  try {
+    const health = await fetch(`http://${config.host}:${config.port}/health`, { signal: AbortSignal.timeout(2_000) })
+      .then((response) => response.ok ? response.json() as Promise<Record<string, unknown>> : undefined)
+      .catch(() => undefined);
+    process.stdout.write(`${JSON.stringify({
+      daemon: health ? "running" : "not reachable",
+      ...(health ? { mode: health.mode, model: health.model, uptimeSeconds: health.uptimeSeconds } : { configuredMode: config.mode }),
+      jobs: store.countJobs(),
+      routines: store.countRoutines(),
+      lastTurnOkAt: store.getMetadata(LAST_TURN_OK_KEY) ?? null,
+      lastReconcileAt: store.getMetadata("reconcile.updated_at") ?? null,
+      schemaVersion: store.schemaVersion(),
+      stateDir: config.stateDir,
+    }, null, 2)}\n`);
+  } finally {
+    store.close();
+  }
+}
+
 async function webhookSecret(args: string[]): Promise<void> {
   const config = await loadConfig({ configPath: configPath(args) });
   process.stdout.write(`${config.webhookSecret}\n`);
@@ -208,6 +234,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       break;
     case "webhook-secret":
       await webhookSecret(args);
+      break;
+    case "status":
+      await status(args);
       break;
     case "tunnel":
       await tunnel(args);

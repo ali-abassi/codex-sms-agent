@@ -22,14 +22,12 @@ export function createMessagingPort(client: SendblueClient): MessagingPort {
       fromNumber: input.fromNumber,
       content: input.content,
       mediaUrl: input.mediaUrl,
-      ...(input.replyTo ? { replyTo: { messageHandle: input.replyTo } } : {}),
     })),
     sendReaction: (input) => client.sendReaction(input),
     sendCarousel: async (input) => accepted(await client.sendCarousel({
       number: input.number,
       fromNumber: input.fromNumber,
       mediaUrls: input.mediaUrls,
-      ...(input.replyTo ? { replyTo: { messageHandle: input.replyTo } } : {}),
     })),
     uploadFile: async (path) => ({ mediaUrl: await client.uploadFile(path) }),
   };

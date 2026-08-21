@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DatabaseSync } from "node:sqlite";
 import { threadKey, type InboundMessage } from "../src/domain/message.js";
+import { DAY_MS, parseDays } from "../src/domain/schedule.js";
 import { StateStore } from "../src/state/store.js";
 
 const temporaryDirectories: string[] = [];
@@ -138,27 +140,6 @@ describe("StateStore", () => {
     }
   });
 
-  it("recovers stale processing work after restart", () => {
-    const path = databasePath();
-    const beforeRestart = new StateStore(path);
-    beforeRestart.enqueue(message("interrupted"), "webhook", 50);
-    expect(beforeRestart.claimNext(100)?.state).toBe("processing");
-    beforeRestart.close();
-
-    const afterRestart = new StateStore(path);
-    try {
-      expect(afterRestart.recoverStaleProcessing(99, 200)).toBe(0);
-      expect(afterRestart.claimNext(200)).toBeUndefined();
-      expect(afterRestart.recoverStaleProcessing(100, 201)).toBe(1);
-
-      const recovered = afterRestart.claimNext(201)!;
-      expect(recovered.message.handle).toBe("interrupted");
-      expect(recovered.attemptCount).toBe(2);
-    } finally {
-      afterRestart.close();
-    }
-  });
-
   it("persists Codex threads and reconciliation metadata across reopen", () => {
     const path = databasePath();
     const first = new StateStore(path);
@@ -223,6 +204,61 @@ describe("StateStore", () => {
       expect(after.recoverAllProcessing(1_002)).toBe(1);
     } finally {
       after.close();
+    }
+  });
+
+  it("migrates a version-0 database in place and keeps its rows", () => {
+    const path = databasePath();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE inbound_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, provider_handle TEXT NOT NULL UNIQUE, thread_key TEXT NOT NULL,
+        message_json TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
+        available_at REAL NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+        processing_started_at REAL, finished_at REAL, error_summary TEXT
+      );
+      CREATE TABLE routines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, thread_key TEXT NOT NULL, target_json TEXT NOT NULL, task TEXT NOT NULL,
+        interval_ms INTEGER NOT NULL, next_run_at REAL NOT NULL, created_at REAL NOT NULL
+      );
+      INSERT INTO routines (thread_key, target_json, task, interval_ms, next_run_at, created_at)
+      VALUES ('+15550000002', '${JSON.stringify(message("t", { content: "" }))}', 'old task', 3600000, 50, 10);
+    `);
+    legacy.close();
+
+    const store = new StateStore(path);
+    try {
+      expect(store.schemaVersion()).toBe(1);
+      const [routine] = store.listRoutines("+15550000002");
+      expect(routine).toMatchObject({ task: "old task", intervalMs: 3_600_000, daysMask: 0b1111111 });
+      expect(routine?.atMinute).toBeUndefined();
+      expect(store.enqueueDueRoutines(100)).toBe(1);
+      const job = store.claimNext(100)!;
+      expect(job.envelopeJson).toBeUndefined();
+      expect(store.saveEnvelope(job.id, '{"bubbles":["x"]}', 101)).toBe(true);
+      expect(store.getJobByHandle(job.message.handle)?.envelopeJson).toBe('{"bubbles":["x"]}');
+    } finally {
+      store.close();
+    }
+  });
+
+  it("creates clock-aligned routines and advances them per the schedule", () => {
+    const store = new StateStore(databasePath());
+    try {
+      store.setThreadTarget("+15550000002", message("source", { content: "" }), 1);
+      const monday7 = new Date(2026, 7, 24, 7, 0).getTime();
+      const routine = store.createRoutineForThread("+15550000002", "standup notes", {
+        intervalMs: DAY_MS,
+        atMinute: 8 * 60,
+        daysMask: parseDays("weekdays"),
+      }, monday7);
+      expect(new Date(routine.nextRunAt)).toEqual(new Date(2026, 7, 24, 8, 0));
+      expect(store.enqueueDueRoutines(routine.nextRunAt + 1)).toBe(1);
+      const [advanced] = store.listRoutines("+15550000002");
+      expect(new Date(advanced!.nextRunAt)).toEqual(new Date(2026, 7, 25, 8, 0));
+      expect(store.countRoutines()).toBe(1);
+    } finally {
+      store.close();
     }
   });
 

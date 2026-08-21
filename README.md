@@ -11,8 +11,8 @@ agent:  yep, landed at 14:02. nginx restarted, /health is 200.
 you:    make me a python script that renames everything in ~/Downloads by date
 agent:  done, ~/bin/rename_by_date.py. dry-run by default, --apply to commit.
 
-you:    check the acme-api CI every 2 hours and only text me if it's red
-agent:  on it. every 2h, quiet unless something breaks.
+you:    every weekday at 8 text me what's on my calendar
+agent:  set. first one monday 8:00.
 ```
 
 - Built on the official `@openai/codex-sdk`, using your existing ChatGPT plan (`codex login`). No API key.
@@ -104,7 +104,7 @@ codex-sms-agent start
 
 It starts in **shadow** mode: it receives texts but doesn't run Codex or reply. Text your Sendblue number and watch for `message_queued` in the output. If you see it, the pipe works.
 
-Now flip it on. In `~/.config/codex-sms-agent/config.json` set `"mode": "active"`, restart, and text it something. (`SMS_AGENT_MODE=active codex-sms-agent start` works for a one-off.)
+Now flip it on. In `~/.config/codex-sms-agent/config.json` set `"mode": "active"`, restart, and text it something. (`CODEX_SMS_AGENT_MODE=active codex-sms-agent start` works for a one-off.)
 
 ### 6. Keep it running
 
@@ -160,18 +160,21 @@ Just text. No syntax. A few commands exist for when you need them:
 | `/restart` | Stop everything and restart the agent |
 | `/help` | List these |
 
+From the terminal, `codex-sms-agent status` shows whether the daemon is up, queue counts, routine count, and the last successful turn.
+
 ### Routines (built in, nothing to install)
 
 Recurring work is part of the box. Say it in plain words and the agent creates a durable schedule in its SQLite store:
 
 ```text
 you:    check ~/code/acme-api's CI every 2 hours and only text me if it's red
-you:    every morning send me the top 3 items from my todo.txt
+you:    every weekday at 8 send me the top 3 items from my todo.txt
+you:    every sunday at 18:00 remind me to back up
 you:    what routines do I have
 you:    stop the CI one
 ```
 
-Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Routines are **intervals** (every 30m, 2h, 1d, 1w; 1 minute to 365 days) anchored at creation time, not clock-aligned cron; "every morning" means every 24 hours from when you asked. Exact-time scheduling is on the roadmap.
+Each run is a normal Codex turn with the same tools and memory as a text from you. Routines survive restarts and reboots. Plain intervals (every 30m, 2h, ...) run from when you asked; daily and weekly routines can be pinned to a clock time and to days of the week (local time zone).
 
 ---
 
@@ -272,7 +275,7 @@ If you've already taught Codex how to work on your machine, the SMS agent inheri
 
 ## Config reference
 
-`~/.config/codex-sms-agent/config.json`. Every key can also be an environment variable (`SENDBLUE_API_KEY`, `OPERATOR_NAME`, `SMS_AGENT_MODE`, `CODEX_MODEL`...); env wins.
+`~/.config/codex-sms-agent/config.json`. Every key can also be an environment variable prefixed `CODEX_SMS_AGENT_` (`CODEX_SMS_AGENT_MODE`, `CODEX_SMS_AGENT_SENDBLUE_API_KEY`, `CODEX_SMS_AGENT_PORT`, ...); env wins over the file. Bare `PORT`/`HOST` are ignored on purpose.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -313,7 +316,7 @@ Housekeeping is automatic: finished jobs are pruned after 30 days, downloaded at
 
 Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
 
-If the Mac reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Codex produces garbage, you get bounded plain text, never an executed action. Local files Codex wants to send you must live in its workspace or the media directory; it can't upload arbitrary paths.
+If the Mac reboots mid-task, the task is re-queued. If the agent is stopped mid-task, same. If Sendblue is down when a reply is ready, the reply is kept and retried with backoff for about 15 minutes instead of re-running Codex. If Codex produces garbage, you get bounded plain text, never an executed action. Local files Codex wants to send you must live in its workspace or the media directory; it can't upload arbitrary paths. If a task edits the agent's own `AGENTS.md`, you get told.
 
 ## Development
 

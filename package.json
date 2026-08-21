@@ -54,5 +54,8 @@
   "homepage": "https://github.com/ali-abassi/codex-sms-agent#readme",
   "bugs": {
     "url": "https://github.com/ali-abassi/codex-sms-agent/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

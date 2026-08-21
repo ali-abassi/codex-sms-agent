@@ -139,4 +139,3 @@ export function normalizeV2Message(value: unknown): InboundMessage {
   return normalizeMessage(value);
 }
 
-export const normalizeSendblueMessage = normalizeV2Message;

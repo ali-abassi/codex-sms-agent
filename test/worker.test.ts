@@ -7,6 +7,7 @@ import type { CodexRunner, CodexTurnResult } from "../src/codex/runner.js";
 import type { Logger } from "../src/log.js";
 import { StateStore } from "../src/state/store.js";
 import { CodexRunnerError } from "../src/codex/runner.js";
+import { SendblueHttpError, SendblueNetworkError } from "../src/sendblue/client.js";
 import { AgentWorker, controlCommandFor, type MessagingPort } from "../src/worker.js";
 
 const directories: string[] = [];
@@ -110,11 +111,11 @@ describe("AgentWorker", () => {
   });
 
   it("resumes the same Codex thread for later messages in a thread", async () => {
-    const test = harness(codexResult("session-1", { text: "First" }));
+    const test = harness(codexResult("session-1", { bubbles: ["First"] }));
     test.store.enqueue(message("first"), "webhook", 1);
     await test.worker.runOnce();
     test.store.enqueue(message("second"), "webhook", 2);
-    test.run.mockResolvedValueOnce(codexResult("session-1", { text: "Second" }));
+    test.run.mockResolvedValueOnce(codexResult("session-1", { bubbles: ["Second"] }));
 
     await test.worker.runOnce();
 
@@ -175,8 +176,7 @@ describe("AgentWorker", () => {
       reaction: { messageHandle: "rich", value: "love" },
       media: { kind: "local", localPath: join(root, "image.png"), caption: "image" },
       carousel: { urls: ["https://example.test/1.png", "https://example.test/2.png"] },
-      text: "All sent.",
-      replyTo: "rich",
+      bubbles: ["All sent."],
     }), { mediaRoot: root });
     test.store.enqueue(message("rich"), "webhook", 1);
 
@@ -226,7 +226,7 @@ describe("AgentWorker", () => {
   });
 
   it("handles /clear without calling Codex", async () => {
-    const test = harness(codexResult("unused", { text: "unused" }));
+    const test = harness(codexResult("unused", { bubbles: ["unused"] }));
     test.store.setCodexThreadId("+15550000002", "old-session", 1);
     test.store.enqueue(message("clear", { content: "/clear" }), "webhook", 2);
 
@@ -257,7 +257,7 @@ describe("AgentWorker", () => {
   });
 
   it("reports mode, model, in-flight work, and queue depth for /status", async () => {
-    const test = harness(codexResult("unused", { text: "unused" }), {
+    const test = harness(codexResult("unused", { bubbles: ["unused"] }), {
       status: () => ({ mode: "active", model: "gpt-5.6-sol" }),
     });
     test.store.enqueue(message("older", { fromNumber: "+15550000009" }), "webhook", 1);
@@ -275,7 +275,7 @@ describe("AgentWorker", () => {
 
   it("lets /clear cancel the in-flight Codex turn for that thread without a snag text", async () => {
     let abortSignal: AbortSignal | undefined;
-    const test = harness(codexResult("unused", { text: "unused" }));
+    const test = harness(codexResult("unused", { bubbles: ["unused"] }));
     test.run.mockImplementation((input) => new Promise((_resolve, reject) => {
       abortSignal = input.signal;
       input.signal?.addEventListener("abort", () => reject(new CodexRunnerError("aborted", "cancelled")), { once: true });
@@ -300,7 +300,7 @@ describe("AgentWorker", () => {
 
   it("re-queues an in-flight turn aborted by shutdown so the next daemon retries it", async () => {
     let abortSignal: AbortSignal | undefined;
-    const test = harness(codexResult("unused", { text: "unused" }));
+    const test = harness(codexResult("unused", { bubbles: ["unused"] }));
     test.run.mockImplementation((input) => new Promise((_resolve, reject) => {
       abortSignal = input.signal;
       input.signal?.addEventListener("abort", () => reject(new CodexRunnerError("aborted", "cancelled")), { once: true });
@@ -319,6 +319,42 @@ describe("AgentWorker", () => {
     test.store.close();
   });
 
+  it("defers delivery on provider outages and replays the cached envelope without re-running Codex", async () => {
+    const test = harness(codexResult("session-outage", { bubbles: ["the answer"] }));
+    test.sendblue.sendDirect.mockRejectedValueOnce(new SendblueNetworkError("POST", "/api/send-message"));
+    test.store.enqueue(message("outage"), "webhook", 1);
+
+    await test.worker.runOnce();
+    const deferred = test.store.getJobByHandle("outage")!;
+    expect(deferred.state).toBe("pending");
+    expect(deferred.envelopeJson).toContain("the answer");
+    expect(deferred.availableAt).toBeGreaterThan(Date.now() + 20_000);
+    expect(test.run).toHaveBeenCalledTimes(1);
+
+    // Provider is back: the retry sends the cached envelope, no second Codex turn.
+    const later = new AgentWorker({ store: test.store, codex: { run: test.run }, messaging: test.sendblue, sendblueNumber: "+15550000001", mediaRoot: test.root, typingRefreshMs: 10_000, logger, now: () => deferred.availableAt + 1 });
+    expect(await later.runOnce()).toBe(true);
+    expect(test.run).toHaveBeenCalledTimes(1);
+    expect(test.sendblue.sendDirect).toHaveBeenLastCalledWith(expect.objectContaining({ content: "the answer" }));
+    expect(test.store.getJobByHandle("outage")?.state).toBe("done");
+    test.store.close();
+  });
+
+  it("gives up with a durable failure after the delivery attempt cap", async () => {
+    const test = harness(codexResult("session-cap", { bubbles: ["x"] }));
+    test.sendblue.sendDirect.mockRejectedValue(new SendblueHttpError("POST", "/api/send-message", 503));
+    test.store.enqueue(message("cap"), "webhook", 1);
+    let clock = 1_000;
+    const worker = new AgentWorker({ store: test.store, codex: { run: test.run }, messaging: test.sendblue, sendblueNumber: "+15550000001", mediaRoot: test.root, typingRefreshMs: 10_000, logger, now: () => clock });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      expect(await worker.runOnce()).toBe(true);
+      clock = test.store.getJobByHandle("cap")!.availableAt + 1;
+    }
+    expect(test.store.getJobByHandle("cap")?.state).toBe("failed");
+    expect(test.run).toHaveBeenCalledTimes(1);
+    test.store.close();
+  });
+
   it("does not send a snag text after a partially delivered reply", async () => {
     const test = harness(codexResult("session-partial", { bubbles: ["first", "second"] }));
     test.sendblue.sendDirect
@@ -330,6 +366,24 @@ describe("AgentWorker", () => {
 
     expect(test.sendblue.sendDirect).toHaveBeenCalledTimes(2);
     expect(test.store.getJobByHandle("partial")?.state).toBe("done");
+    test.store.close();
+  });
+
+  it("warns the operator when a turn rewrote the standing instructions", async () => {
+    let digest = "before";
+    const test = harness(codexResult("session-tamper", { bubbles: ["done"] }));
+    const worker = new AgentWorker({
+      store: test.store,
+      codex: { run: async (input) => { digest = "after"; return test.run(input); }, operatorInstructionsDigest: async () => digest },
+      messaging: test.sendblue, sendblueNumber: "+15550000001", mediaRoot: test.root, typingRefreshMs: 10_000, logger,
+    });
+    test.store.enqueue(message("tamper"), "webhook", 1);
+
+    await worker.runOnce();
+
+    expect(test.sendblue.sendDirect).toHaveBeenCalledTimes(2);
+    expect(test.sendblue.sendDirect).toHaveBeenLastCalledWith(expect.objectContaining({ content: expect.stringContaining("standing instructions") }));
+    expect(logger.warn).toHaveBeenCalledWith("operator_instructions_changed", expect.anything());
     test.store.close();
   });
 });

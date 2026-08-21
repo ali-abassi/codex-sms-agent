@@ -269,6 +269,20 @@ describe("final action envelope", () => {
     expect(parseFinalEnvelope('{“bubbles”:[“first”,“”,“second”]}').envelope).toEqual({ bubbles: ["first", "second"] });
   });
 
+  it("accepts the SDK's null-filled shape and the legacy text field, and digests operator instructions", async () => {
+    expect(parseFinalEnvelope('{"bubbles":["hi"],"reaction":null,"media":null,"carousel":null}').envelope).toEqual({ bubbles: ["hi"] });
+    expect(parseFinalEnvelope('{"bubbles":["hi"],"reaction":{"value":"love","messageHandle":null},"media":null,"carousel":null}').envelope)
+      .toEqual({ bubbles: ["hi"], reaction: { value: "love" } });
+    expect(parseFinalEnvelope('{"text":"legacy"}').envelope).toEqual({ bubbles: ["legacy"] });
+
+    const root = workspace();
+    const runner = new CodexRunner({ workspace: root, createClient: () => { throw new Error("unused"); } });
+    await runner.prepareWorkspace();
+    const clean = await runner.operatorInstructionsDigest();
+    await writeFile(join(root, "AGENTS.md"), `${await readFile(join(root, "AGENTS.md"), "utf8")}\n# mine\n`);
+    expect(await runner.operatorInstructionsDigest()).not.toBe(clean);
+  });
+
   it("strips canned openers but keeps the answer behind them", () => {
     expect(parseFinalEnvelope('{"bubbles":["Okay, here\'s what I found: the build is green."]}').envelope)
       .toEqual({ bubbles: ["The build is green."] });
