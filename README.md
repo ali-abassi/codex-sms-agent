@@ -316,7 +316,7 @@ Housekeeping is automatic: finished jobs are pruned after 30 days, downloaded at
 
 ## How it works, briefly
 
-![Your text goes through Sendblue to the agent on your Mac, which runs Codex and texts back](docs/flow.png)
+![Your text goes through Sendblue to the agent on your Mac, which runs Codex and texts back](docs/flow.jpg)
 
 Text arrives (webhook or poll) → dropped unless it's a direct message from an allowlisted number → stored in SQLite, deduplicated → a worker runs one Codex turn in your workspace, resuming that sender's thread → Codex returns a JSON envelope (up to 4 text bubbles, optional reaction/media/carousel) → the host validates it and sends via Sendblue.
 
