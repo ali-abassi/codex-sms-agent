@@ -13,7 +13,7 @@ you:    send me a screenshot of my desktop
 agent:  [image]
 
 you:    has my claude code session finished?
-agent:  yep, 11 minutes ago. auth refactor, 14 files, tests green. want the diff?
+agent:  yep, 11 minutes ago. auth refactor, 14 files, tests green. want it merged?
 
 you:    any recent emails that need my attention?
 agent:  three. contract from legal needs your signature, a stripe payment failed,
@@ -28,7 +28,7 @@ agent:  three. contract from legal needs your signature, a stripe payment failed
 - Send it photos and screenshots. It sends back text, images, files, reactions.
 - Ships **barebones on purpose**: the messaging plumbing is done, the agent's abilities are yours to add (see [Customize](#customize-it)).
 
-> **Security, plainly:** whoever is on the allowlist has full, unsandboxed control of that machine over text. Only allowlist yourself. Use a dedicated Sendblue number. Details in [SECURITY.md](SECURITY.md).
+> **Security, plainly:** whoever is on the allowlist has full, unsandboxed control of that machine over text. Allowlist only yourself, and keep the list short. The Sendblue number is its own line, separate from your personal iMessage, so the blast radius is exactly the people you put on that list. Details in [SECURITY.md](SECURITY.md).
 
 ---
 
