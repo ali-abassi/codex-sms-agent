@@ -51,21 +51,28 @@ Never guess my keys or phone numbers. Keep secrets out of shell history and logs
    and use `node dist/cli.js` instead of `codex-sms-agent` from here on.
 3. Ask me for my Sendblue API Key ID, API Secret Key, Sendblue number, my own phone
    number (both as +15551234567), and my first name.
-4. Write ~/.config/codex-sms-agent/config.json, directory 0700 and file 0600, with:
+4. Write ~/.config/codex-sms-agent/config.json, directory 0700 and file 0600, with
+   exactly these keys and nothing else, or startup will reject the file:
    sendblueApiKey, sendblueApiSecret, sendblueNumber, allowedPhones (just my number),
    webhookSecret (32 random hex bytes you generate), mode "shadow", operatorName,
    and workspace "~/.local/share/codex-sms-agent/workspace".
-5. Run `tailscale funnel --bg 8787` and put the https URL it prints in the config
-   as publicUrl.
+   If the file already exists, edit it instead of overwriting it.
+5. Run `tailscale funnel --bg 8787` and put the https URL it prints in the config as
+   publicUrl. If Tailscale says Funnel isn't enabled, it prints a link — give it to me
+   and wait.
 6. Show me the webhook URL (<publicUrl>/webhook) and the secret
    (`codex-sms-agent webhook-secret`). Tell me to set them in the Sendblue dashboard
    as the receive webhook, with the secret in the `sb-signing-secret` header.
    Wait for me to confirm.
-7. Run `codex-sms-agent doctor` and fix whatever it flags.
-8. Run `codex-sms-agent start`. It's in shadow mode, so it replies to nothing.
-   Tell me to text my Sendblue number, then confirm you see `message_queued`.
+7. Run `codex-sms-agent doctor`. Everything should pass except public_tunnel, which
+   can't pass until the agent is running. Fix anything else it flags.
+8. Run `codex-sms-agent start` in the background. It's in shadow mode, so it replies to
+   nothing. Tell me to text my Sendblue number, then confirm you see `message_queued`
+   in the output. Run `codex-sms-agent doctor` again: public_tunnel should pass now.
+   If it doesn't, the webhook isn't reaching us — check the tunnel before moving on.
 9. Set "mode": "active" in the config, then run `codex-sms-agent service install`
-   so it starts at login and survives reboots.
+   so it starts at login and survives reboots. Tell me to text it again to confirm it
+   replies.
 10. If this machine sleeps, tell me how to stop it sleeping. Skip that on a VM.
 ```
 
@@ -79,6 +86,8 @@ npm ci && npm run build && npm link
 codex-sms-agent setup          # asks for keys, your number, name, mode
 tailscale funnel --bg 8787     # or: ngrok http 8787
 ```
+
+`setup` won't overwrite an existing config. If you already have one, edit it directly.
 
 Put the tunnel URL in `~/.config/codex-sms-agent/config.json` as `"publicUrl"`. In the Sendblue dashboard, set the receive webhook to `https://your-url/webhook` and send the value of `codex-sms-agent webhook-secret` in the `sb-signing-secret` header. That secret is a password, not a signature — anyone who has it can post messages as you.
 

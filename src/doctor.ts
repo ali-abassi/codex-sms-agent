@@ -106,11 +106,27 @@ export async function runDoctor(
   }
 
   const portAvailable = await checkPort(config.host, config.port);
-  checks.push({
-    name: "listen_port",
-    ok: portAvailable,
-    detail: portAvailable ? `${config.host}:${config.port} available` : `${config.host}:${config.port} already in use`,
-  });
+  let portOk = portAvailable;
+  let portDetail = portAvailable
+    ? `${config.host}:${config.port} available`
+    : `${config.host}:${config.port} already in use`;
+  if (!portAvailable) {
+    // The most common reason the port is taken is that this agent is already running.
+    try {
+      const host = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
+      const authority = host.includes(":") ? `[${host}]` : host;
+      const response = await fetcher(`http://${authority}:${config.port}/health`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.ok) {
+        portOk = true;
+        portDetail = `${config.host}:${config.port} in use by this agent (already running)`;
+      }
+    } catch {
+      // Something else holds the port; keep the failure.
+    }
+  }
+  checks.push({ name: "listen_port", ok: portOk, detail: portDetail });
 
   if (config.publicUrl) {
     try {

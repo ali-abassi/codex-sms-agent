@@ -118,6 +118,50 @@ describe("doctor", () => {
     expect(execute.mock.calls.flat(2)).not.toContain("exec");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it("passes the port check when this agent already holds the port", async () => {
+    const root = await directory();
+    const execute = vi.fn(async (_binary: string, args: string[]) => ({
+      stdout: args[0] === "--version" ? "codex-cli 0.149.0\n" : "",
+      stderr: args[0] === "login" ? "Logged in using ChatGPT\n" : "",
+    }));
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/health")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      return new Response(JSON.stringify({ lines: [{ phone_number: "+15550000001" }] }), { status: 200 });
+    });
+
+    const checks = await runDoctor(config(root), {
+      exec: execute,
+      fetch: fetcher as unknown as typeof fetch,
+      checkPort: vi.fn(async () => false),
+    });
+
+    const port = checks.find((check) => check.name === "listen_port");
+    expect(port?.ok).toBe(true);
+    expect(port?.detail).toContain("already running");
+  });
+
+  it("fails the port check when something else holds the port", async () => {
+    const root = await directory();
+    const execute = vi.fn(async (_binary: string, args: string[]) => ({
+      stdout: args[0] === "--version" ? "codex-cli 0.149.0\n" : "",
+      stderr: args[0] === "login" ? "Logged in using ChatGPT\n" : "",
+    }));
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/health")) throw new Error("connection refused");
+      return new Response(JSON.stringify({ lines: [{ phone_number: "+15550000001" }] }), { status: 200 });
+    });
+
+    const checks = await runDoctor(config(root), {
+      exec: execute,
+      fetch: fetcher as unknown as typeof fetch,
+      checkPort: vi.fn(async () => false),
+    });
+
+    const port = checks.find((check) => check.name === "listen_port");
+    expect(port?.ok).toBe(false);
+    expect(port?.detail).toContain("already in use");
+  });
 });
 
 describe("structured logger", () => {
