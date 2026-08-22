@@ -175,7 +175,7 @@ you:    why did that last task fail?
 you:    you keep timing out on long builds. raise the timeout and restart yourself
 ```
 
-Logs are JSON lines: event names, timings, masked phone numbers, job ids. Message text, prompts, tool output, and keys are redacted before anything is written, so you get the shape of what happened, not the content. Errors record their type but not their message, which is enough to find where something failed, not always why.
+Logs are JSON lines: event names, timings, masked phone numbers, job ids, and error messages. Your message text, prompts, tool output, and keys are redacted before anything is written, so it can see what failed and why without seeing what you said.
 
 It can fix things too. It can edit its own `AGENTS.md`, install a CLI it's missing, change `~/.config/codex-sms-agent/config.json` and restart itself, or edit this repo and rebuild. If it touches its own `AGENTS.md`, you get told.
 
@@ -240,7 +240,7 @@ The parts you don't have to build:
 
 - **To Sendblue:** your texts, attachments, phone numbers, and the replies.
 - **To OpenAI**, through the Codex SDK on your ChatGPT login: your text, your `AGENTS.md`, images you send, and the output of every tool Codex runs.
-- **Nowhere else.** No telemetry. Logs stay local and never contain message text or credentials.
+- **Nowhere else.** No telemetry. Logs stay on the machine, and never contain message text or credentials. The agent can read them itself — see [Debugging](#debugging-and-self-improvement).
 
 ## Updating
 

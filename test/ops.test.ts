@@ -165,19 +165,57 @@ describe("doctor", () => {
 });
 
 describe("structured logger", () => {
-  it("redacts content, tokens, phone numbers, and error messages", () => {
+  it("redacts content, tokens, and phone numbers", () => {
     const lines: string[] = [];
     const logger = createLogger({ sink: (line) => lines.push(line), now: () => new Date(0) });
     logger.error("failed", {
       content: "private message",
       apiKey: "private-key",
       phone: "+15550000002",
-      error: new Error("credential-sentinel"),
     });
     const line = lines[0]!;
     expect(line).toContain("+1***0002");
     expect(line).not.toContain("private message");
     expect(line).not.toContain("private-key");
-    expect(line).not.toContain("credential-sentinel");
+  });
+
+  it("keeps error messages so failures can be diagnosed", () => {
+    const lines: string[] = [];
+    const logger = createLogger({ sink: (line) => lines.push(line), now: () => new Date(0) });
+    logger.error("failed", { error: new Error("Sendblue request POST /api/send-message failed with HTTP 429") });
+    expect(lines[0]!).toContain("failed with HTTP 429");
+  });
+
+  it("scrubs credentials and phone numbers out of error messages", () => {
+    const lines: string[] = [];
+    const logger = createLogger({ sink: (line) => lines.push(line), now: () => new Date(0) });
+    logger.error("failed", {
+      error: new Error(
+        "auth failed for +15550000002 with sk-live-abcdef0123456789 and "
+        + "9f8e7d6c5b4a39281706f5e4d3c2b1a0 via Bearer eyJhbGciOiJIUzI1NiJ9",
+      ),
+    });
+    const line = lines[0]!;
+    expect(line).toContain("+1***0002");
+    expect(line).not.toContain("sk-live-abcdef0123456789");
+    expect(line).not.toContain("9f8e7d6c5b4a39281706f5e4d3c2b1a0");
+    expect(line).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(line).toContain("auth failed");
+  });
+
+  it("keeps file paths intact so failures can be traced", () => {
+    const lines: string[] = [];
+    const logger = createLogger({ sink: (line) => lines.push(line), now: () => new Date(0) });
+    logger.error("failed", { error: new Error("ENOENT: /Users/someone/Documents/Projects/acmeapi/workspace") });
+    expect(lines[0]!).toContain("/Users/someone/Documents/Projects/acmeapi/workspace");
+  });
+
+  it("truncates long error messages", () => {
+    const lines: string[] = [];
+    const logger = createLogger({ sink: (line) => lines.push(line), now: () => new Date(0) });
+    logger.error("failed", { error: new Error("x".repeat(1000)) });
+    const parsed = JSON.parse(lines[0]!) as { error: { message: string } };
+    expect(parsed.error.message.length).toBe(300);
+    expect(parsed.error.message.endsWith("…")).toBe(true);
   });
 });

@@ -13,9 +13,33 @@ type LogSink = (line: string) => void;
 
 const sensitiveKey = /(secret|token|credential|authorization|api.?key|payload|content|prompt|stdout|stderr)/i;
 const e164 = E164_PATTERN;
+/** E.164 numbers anywhere inside a string, not just as the whole value. */
+const embeddedE164 = /\+[1-9]\d{7,14}/g;
+/** Shapes that carry credentials: API keys, bearer tokens, long hex or base64 blobs. */
+const secretShape = new RegExp([
+  "\\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}",      // provider API keys
+  "\\bBearer\\s+[A-Za-z0-9._-]{12,}",         // bearer tokens
+  "\\beyJ[A-Za-z0-9._-]{16,}",                // bare JWTs
+  "\\b[A-Fa-f0-9]{32,}\\b",                   // hex secrets, including our webhook secret
+  "\\b[A-Za-z0-9+/]{20,}={1,2}",             // padded base64
+].join("|"), "g");
+const MAX_MESSAGE_LENGTH = 300;
 
 function maskPhone(value: string): string {
   return `${value.slice(0, 2)}***${value.slice(-4)}`;
+}
+
+/**
+ * Error messages are the only free text we keep, because without them a log says
+ * where something broke but never why. Scrub anything credential-shaped first.
+ */
+function scrubMessage(value: string): string {
+  const scrubbed = value
+    .replace(embeddedE164, (match) => maskPhone(match))
+    .replace(secretShape, "[redacted]");
+  return scrubbed.length > MAX_MESSAGE_LENGTH
+    ? `${scrubbed.slice(0, MAX_MESSAGE_LENGTH - 1)}…`
+    : scrubbed;
 }
 
 function safeValue(key: string, value: unknown, depth = 0): unknown {
@@ -26,11 +50,13 @@ function safeValue(key: string, value: unknown, depth = 0): unknown {
     return {
       name: value.name,
       ...(typeof code === "string" || typeof code === "number" ? { code } : {}),
+      ...(value.message ? { message: scrubMessage(value.message) } : {}),
     };
   }
   if (typeof value === "string") {
     if (e164.test(value)) return maskPhone(value);
-    return value.length > 500 ? `${value.slice(0, 499)}…` : value;
+    const masked = value.replace(embeddedE164, (match) => maskPhone(match));
+    return masked.length > 500 ? `${masked.slice(0, 499)}…` : masked;
   }
   if (Array.isArray(value)) return value.slice(0, 20).map((item) => safeValue(key, item, depth + 1));
   if (typeof value === "object" && value !== null) {
