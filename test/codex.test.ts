@@ -170,7 +170,7 @@ describe("CodexRunner", () => {
       createClient: () => ({ resumeThread, startThread }),
     });
 
-    expect((await runner.run({ prompt: "migrate", threadId: "1780000000000-old-fx-session" })).threadId).toBe(THREAD_B);
+    expect((await runner.run({ prompt: "migrate", threadId: "1780000000000-old-session" })).threadId).toBe(THREAD_B);
     expect(resumeThread).not.toHaveBeenCalled();
     expect(startThread).toHaveBeenCalledOnce();
   });
