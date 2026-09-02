@@ -102,16 +102,18 @@ No tunnel at all also works. It polls Sendblue every minute instead, just slower
 
 **Keep the Mac awake** (skip on a VM). Easiest is System Settings → Battery → *Prevent automatic sleeping when the display is off*. Or `sudo pmset -c sleep 0 disablesleep 1`. Check with `pmset -g assertions`.
 
+Worth doing even though a running turn now holds its own `caffeinate` assertion: that only covers work already in flight. A scheduled routine that comes due while the lid is shut still fires late, because nothing was running to keep the machine up. Stopping the machine sleeping is the only real fix, and it's yours to make.
+
 </details>
 
 ## Talk to it
 
-Just text it. Four commands exist if you need them:
+Just text it. Five commands exist if you need them:
 
 | Text | Does |
 |---|---|
 | `/status` | Is it up, what's it doing, what's queued |
-| `/clear` | Stop the current task and forget the conversation |
+| `/clear` or `/new` | Stop the current task and forget the conversation |
 | `/restart` | Stop everything and restart |
 | `/help` | List these |
 
@@ -175,6 +177,8 @@ you:    why did that last task fail?
 you:    you keep timing out on long builds. raise the timeout and restart yourself
 ```
 
+`curl localhost:8787/health` answers the "is it actually working?" questions without reading logs: mode, model, uptime, queue counts by state, turns in flight, whether the clock has jumped (the signature of the machine having slept), and `reconcile` — when inbound polling last succeeded, how many polls in a row failed, and how long it's been quiet. That last one exists because a healthy idle poller and a dead one used to look identical.
+
 Logs are JSON lines: event names, timings, masked phone numbers, job ids, and error messages. Your message text, prompts, tool output, and keys are redacted before anything is written, so it can see what failed and why without seeing what you said.
 
 It can fix things too. It can edit its own `AGENTS.md`, install a CLI it's missing, change `~/.config/codex-sms-agent/config.json` and restart itself, or edit this repo and rebuild. If it touches its own `AGENTS.md`, you get told.
@@ -213,8 +217,10 @@ The parts you don't have to build:
 - **Threads.** One conversation per sender, resumed every time. It remembers.
 - **Typing indicators.** Your text is marked read right away, and the typing bubble stays up while Codex works, so a long task doesn't look dead.
 - **A queue.** One task at a time per sender. Reboot or kill it mid-task and the job resumes.
-- **Retries.** If Sendblue is down when a reply is ready, it waits and retries for ~15 minutes. It never re-runs Codex and never texts you twice.
+- **Retries.** If Sendblue is down when a reply is ready, it replays that finished reply for ~15 minutes (6 tries, backing off) without re-running Codex. If nothing reached you at all and Sendblue was unreachable, it retries the whole turn on the same schedule rather than filing a failure you'd never see. Either way it never texts you twice: once any part of a reply has gone out, that turn is never re-run.
 - **Limits.** Bad output becomes plain text, never an action. It can only send you files from its own workspace.
+- **Sleep and stuck turns.** A cancelled turn kills the whole Codex process tree instead of hanging on a grandchild holding the pipe, and a turn in flight holds a `caffeinate` assertion so the machine doesn't drop into idle sleep mid-task. If the machine sleeps anyway, a routine slot whose next slot has already come is skipped instead of waking to a backlog of stale check-ins.
+- **A watchdog.** It checks once a minute that its own working directory still exists and restarts if it doesn't. That sounds obscure; it was a real nine-hour silent outage. Rebuilding the code deleted the directory the running service was sitting in, and on macOS a process whose cwd is gone can't spawn anything — so every reply became "hit a snag" while `/health` still answered 200.
 
 ## Config
 
@@ -231,10 +237,14 @@ The parts you don't have to build:
 | `publicUrl` | | Your tunnel URL |
 | `workspace` | `~/.local/share/codex-sms-agent/workspace` | Where Codex works and `AGENTS.md` lives |
 | `codexModel` | `gpt-5.6-sol` | Any model your Codex login offers |
-| `codexReasoningEffort` | `medium` | `minimal` to `max` |
+| `codexReasoningEffort` | `medium` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `codexTimeoutMs` | 30 min | Max per task |
 | `maxConcurrency` | 1 | Tasks in parallel across different senders |
 | `pollIntervalMs` | 60000 | Fallback polling interval |
+| `host`, `port` | `127.0.0.1`, 8787 | Where the webhook listens |
+| `stateDir` | `~/.local/share/codex-sms-agent` | Database, logs, media |
+
+The file is strict: an unrecognized key is a startup error, not a warning.
 
 ## What leaves your machine
 
@@ -257,4 +267,6 @@ Everything is in `~/.local/share/codex-sms-agent/state.sqlite`. Stop the service
 npm run check    # typecheck + tests + build
 ```
 
-No test sends a real message. See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
+114 tests, no network and no simulator, a few seconds. No test sends a real message. `test/exec-shim.test.ts` is a real process-level test rather than a mock: it runs the shim against fake `codex` binaries and asserts that a grandchild holding stdout doesn't stall the turn and that a Codex ignoring SIGTERM still gets killed.
+
+Recent changes are in [CHANGELOG.md](CHANGELOG.md). See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
