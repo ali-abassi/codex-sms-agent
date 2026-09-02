@@ -146,6 +146,66 @@ describe("Reconciler", () => {
     state.close();
   });
 
+  it("stays observable while idle: keeps polling, advances the watermark, and beats a heartbeat", async () => {
+    // Regression guard for a false alarm on 2026-09-02: an idle poller logs at debug, so a
+    // healthy poller is silent and looks identical to a dead one. The watermark and the
+    // status must prove liveness even when nothing is fetched.
+    const state = store();
+    const ingestion = new IngestionService({
+      store: state,
+      sendblueNumber: "+15550000001",
+      allowedPhones: new Set(["+15550000002"]),
+      activeAfter: 5_000,
+      logger,
+    });
+    type Page = { messages: InboundMessage[]; pagination: { hasMore: boolean; limit: number; offset: number; total: number } };
+    const listMessages = vi.fn(async (): Promise<Page> => ({
+      messages: [],
+      pagination: { hasMore: false, limit: 100, offset: 0, total: 0 },
+    }));
+    let clock = 1_000_000;
+    const reconciler = new Reconciler({
+      store: state,
+      sendblue: { listMessages },
+      ingestion,
+      sendblueNumber: "+15550000001",
+      activeAfter: 5_000,
+      logger,
+      now: () => clock,
+    });
+
+    expect(reconciler.status()).toEqual({ consecutiveFailures: 0, quietPolls: 0 });
+
+    const heartbeats = () => (logger.info as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([event]) => event === "reconcile_alive").length;
+    const before = heartbeats();
+
+    for (let poll = 1; poll <= 30; poll += 1) {
+      expect(await reconciler.run()).toEqual({ fetched: 0, queued: 0 });
+      // Every idle poll still commits a fresh watermark, which is what proves it ran.
+      expect(state.getMetadata("reconcile.updated_at")).toBe(new Date(clock - 120_000).toISOString());
+      expect(reconciler.status()).toMatchObject({
+        quietPolls: poll,
+        consecutiveFailures: 0,
+        lastSuccessAt: new Date(clock).toISOString(),
+      });
+      clock += 60_000;
+    }
+
+    expect(listMessages).toHaveBeenCalledTimes(30);
+    // Silent by default, but exactly one proof-of-life line after the quiet run.
+    expect(heartbeats() - before).toBe(1);
+
+    // A real message resets the quiet streak and logs normally again.
+    listMessages.mockResolvedValueOnce({
+      messages: [message("live")],
+      pagination: { hasMore: false, limit: 100, offset: 0, total: 1 },
+    });
+    expect(await reconciler.run()).toEqual({ fetched: 1, queued: 1 });
+    expect(reconciler.status().quietPolls).toBe(0);
+    state.close();
+  });
+
   it("does not advance the watermark on provider failure", async () => {
     const state = store();
     state.setMetadata("reconcile.updated_at", "2026-08-19T22:00:00.000Z", 1);

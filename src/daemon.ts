@@ -195,6 +195,7 @@ export async function startDaemon(
       model: config.codexModel,
       uptimeSeconds: Math.floor(process.uptime()),
       queue: store.countJobs(),
+      reconcile: reconciler.status(),
       inflightTurns: worker.inflightCount(),
       clockJumps: {
         count: clock.jumps,

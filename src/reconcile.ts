@@ -6,6 +6,12 @@ import type { Logger } from "./log.js";
 const WATERMARK_KEY = "reconcile.updated_at";
 const OVERLAP_MS = 2 * 60_000;
 const MAX_PAGES = 10;
+/**
+ * A poll that finds nothing logs at debug, which is off by default — so a healthy poller
+ * is silent, and silence is indistinguishable from a dead one. Emit one info line every
+ * this many quiet polls so liveness is visible in the log without flooding it.
+ */
+const QUIET_HEARTBEAT_POLLS = 30;
 
 export type ReconcilerOptions = {
   store: StateStore;
@@ -25,15 +31,35 @@ function rawUpdatedAt(raw: unknown, fallback: number): number {
   return Number.isFinite(timestamp) ? timestamp : fallback;
 }
 
+export type ReconcilerStatus = {
+  /** Last poll that completed without throwing. */
+  lastSuccessAt?: string;
+  /** Consecutive failures since the last success. */
+  consecutiveFailures: number;
+  /** Polls in a row that found nothing; this is the normal idle state. */
+  quietPolls: number;
+};
+
 export class Reconciler {
   readonly #options: ReconcilerOptions;
   readonly #now: () => number;
   #running = false;
   #consecutiveFailures = 0;
+  #lastSuccessAt: number | undefined;
+  #quietPolls = 0;
 
   constructor(options: ReconcilerOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
+  }
+
+  /** Liveness of the inbound poller, for /health. */
+  status(): ReconcilerStatus {
+    return {
+      ...(this.#lastSuccessAt === undefined ? {} : { lastSuccessAt: new Date(this.#lastSuccessAt).toISOString() }),
+      consecutiveFailures: this.#consecutiveFailures,
+      quietPolls: this.#quietPolls,
+    };
   }
 
   async run(): Promise<{ fetched: number; queued: number }> {
@@ -76,8 +102,15 @@ export class Reconciler {
         this.#options.logger.info("reconcile_recovered", { afterFailures: this.#consecutiveFailures });
         this.#consecutiveFailures = 0;
       }
-      const level = fetched === 0 && queued === 0 ? "debug" : "info";
-      this.#options.logger[level]("reconcile_complete", { fetched, queued });
+      this.#lastSuccessAt = this.#now();
+      const quiet = fetched === 0 && queued === 0;
+      this.#quietPolls = quiet ? this.#quietPolls + 1 : 0;
+      this.#options.logger[quiet ? "debug" : "info"]("reconcile_complete", { fetched, queued });
+      // Periodic proof of life while idle. Without it, "no reconcile lines" reads as a dead
+      // poller when it is in fact the normal state, and a genuinely dead one looks the same.
+      if (quiet && this.#quietPolls % QUIET_HEARTBEAT_POLLS === 0) {
+        this.#options.logger.info("reconcile_alive", { quietPolls: this.#quietPolls });
+      }
       return { fetched, queued };
     } catch (error) {
       this.#consecutiveFailures += 1;
