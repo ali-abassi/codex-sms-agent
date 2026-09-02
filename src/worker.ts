@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { join, relative, isAbsolute } from "node:path";
-import type { InboundJob, StateStore } from "./state/store.js";
+import { routineStaleAfter, type InboundJob, type StateStore } from "./state/store.js";
 import { threadKey } from "./domain/message.js";
 import { CodexRunnerError, type CodexRunner, type CodexTurnResult } from "./codex/runner.js";
 import { finalEnvelopeSchema, type FinalEnvelope } from "./codex/protocol.js";
@@ -148,6 +148,11 @@ export class AgentWorker {
   }
 
   /** Abort every in-flight Codex turn (shutdown or /restart). */
+  /** Number of Codex turns currently running. */
+  inflightCount(): number {
+    return this.#inflight.size;
+  }
+
   abortAll(reason: AbortReason): number {
     let count = 0;
     for (const controller of this.#inflight.values()) {
@@ -305,6 +310,18 @@ export class AgentWorker {
         if (outcome === "restart") setTimeout(() => this.#options.requestRestart?.(), 250).unref?.();
         return;
       }
+      // A routine run that waited past its own next slot (a turn overran, or the machine
+      // slept) would only deliver stale output ahead of the fresh run. Drop it quietly.
+      const staleAfter = routineStaleAfter(message);
+      if (staleAfter !== undefined && staleAfter <= this.#now()) {
+        this.#options.store.markDone(job.id, this.#now());
+        this.#options.logger.warn("routine_run_skipped_stale", {
+          handle: message.handle,
+          staleAfter: new Date(staleAfter).toISOString(),
+          waitedMs: this.#now() - job.createdAt,
+        });
+        return;
+      }
       this.#inflight.set(thread, controller);
 
       await Promise.allSettled([
@@ -402,32 +419,42 @@ export class AgentWorker {
         this.#options.logger.info("message_aborted", { handle: message.handle, reason });
         return;
       }
-      // Provider trouble: keep the job and retry delivery later rather than texting a "snag".
-      if (isTransientSendblueError(error) && job.attemptCount < MAX_DELIVERY_ATTEMPTS) {
-        const delayMs = deliveryBackoffMs(job.attemptCount);
-        this.#options.store.retry(job.id, error, this.#now() + delayMs, this.#now());
-        this.#options.logger.warn("delivery_deferred", { handle: message.handle, attempt: job.attemptCount, retryInMs: delayMs });
-        return;
-      }
-      // Something was already delivered; do not follow it with a "snag" text.
+      // Something was already delivered; do not follow it with a "snag" text, and never
+      // re-run the turn, which would send it again.
       if (progress.accepted > 0) finalOutcome = true;
-      if (!finalOutcome) {
+      // Provider trouble before anything went out: keep the job and retry later rather
+      // than texting a "snag" (which would not get through either).
+      let providerUnreachable = !finalOutcome && isTransientSendblueError(error);
+      if (!finalOutcome && !providerUnreachable) {
         try {
           await this.#reply(job, {
             content: this.#options.fallbackText ??
               "Hit a snag on that one. Try me again, and I’ll take another run at it.",
           });
           finalOutcome = true;
-        } catch {
-          // The durable failed row is the operator-visible outcome when the provider is unreachable.
+        } catch (fallbackError) {
+          providerUnreachable = isTransientSendblueError(fallbackError);
         }
       }
-      if (finalOutcome) this.#options.store.markDone(job.id, this.#now());
-      else this.#options.store.markFailed(job.id, error, this.#now());
+      if (finalOutcome) {
+        this.#options.store.markDone(job.id, this.#now());
+      } else if (providerUnreachable && job.attemptCount < MAX_DELIVERY_ATTEMPTS) {
+        // Nothing reached the sender and the provider could not be reached either (an
+        // outage, or the network is not back after the machine woke). Try the whole turn
+        // again later instead of filing a failure no one will see.
+        const delayMs = deliveryBackoffMs(job.attemptCount);
+        this.#options.store.retry(job.id, error, this.#now() + delayMs, this.#now());
+        this.#options.logger.warn("delivery_deferred", { handle: message.handle, error, attempt: job.attemptCount, retryInMs: delayMs });
+        return;
+      } else {
+        // The durable failed row is the operator-visible outcome when the provider is unreachable.
+        this.#options.store.markFailed(job.id, error, this.#now());
+      }
       this.#options.logger.error("message_failed", {
         handle: message.handle,
         error,
         fallbackAccepted: finalOutcome,
+        attempt: job.attemptCount,
       });
     } finally {
       finished = true;

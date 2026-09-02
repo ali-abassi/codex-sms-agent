@@ -42,7 +42,11 @@ function assertSendblueMediaUrl(value: string): URL {
     host === "sendblue.co" ||
     host.endsWith(".sendblue.co") ||
     host === "sendblue.com" ||
-    host.endsWith(".sendblue.com");
+    host.endsWith(".sendblue.com") ||
+    // Sendblue serves inbound attachments from its own Google Cloud Storage bucket, so a
+    // real inbound image arrives on this host and would otherwise be rejected.
+    (host === "storage.googleapis.com" &&
+      (url.pathname === "/inbound-file-store" || url.pathname.startsWith("/inbound-file-store/")));
   if (url.protocol !== "https:" || !trustedHost || url.username || url.password) {
     throw new Error("Inbound media URL is not a trusted Sendblue HTTPS URL");
   }
@@ -60,6 +64,9 @@ function extensionFor(url: URL, contentType: string): string {
   const extension = extname(url.pathname).toLowerCase();
   return /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : ".bin";
 }
+
+/** Providers sometimes serve an image as octet-stream; the extension still identifies it. */
+const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"]);
 
 async function fetchValidated(
   initial: URL,
@@ -115,14 +122,15 @@ export async function downloadInboundMedia(
 
   const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() || "application/octet-stream";
   const directory = join(options.root, safeName(options.handle));
-  const path = join(directory, `attachment${extensionFor(url, contentType)}`);
+  const extension = extensionFor(url, contentType);
+  const path = join(directory, `attachment${extension}`);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(path, Buffer.concat(chunks), { mode: 0o600 });
 
   return {
     path,
     contentType,
-    isImage: contentType.startsWith("image/"),
+    isImage: contentType.startsWith("image/") || imageExtensions.has(extension),
     bytes,
     sourceUrl: url.toString(),
   };

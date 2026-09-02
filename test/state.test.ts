@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { threadKey, type InboundMessage } from "../src/domain/message.js";
 import { DAY_MS, parseDays } from "../src/domain/schedule.js";
-import { StateStore } from "../src/state/store.js";
+import { StateStore, routineStaleAfter } from "../src/state/store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -182,6 +182,42 @@ describe("StateStore", () => {
       expect(store.listRoutines("+15550000002")[0]?.nextRunAt).toBe(121_000);
       expect(store.deleteRoutine("+15550000002", routine.id)).toBe(true);
       expect(store.listRoutines("+15550000002")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("folds a due routine slot into a run that is still open instead of stacking a second one", () => {
+    const store = new StateStore(databasePath());
+    try {
+      store.setThreadTarget("+15550000002", message("source", { content: "" }), 999);
+      const routine = store.createRoutineForThread("+15550000002", "check in", 60_000, 1_000);
+      expect(store.enqueueDueRoutines(61_000)).toBe(1);
+      const first = store.claimNext(61_000)!;
+      expect(routineStaleAfter(first.message)).toBe(121_000);
+
+      // The turn overruns into the next slot: nothing new is queued, the schedule moves on.
+      expect(store.enqueueDueRoutines(121_500)).toBe(0);
+      expect(store.takeRoutineSkips()).toEqual([{ routineId: routine.id, scheduledAt: 121_000, reason: "coalesced" }]);
+      expect(store.takeRoutineSkips()).toEqual([]);
+
+      // Once the run is finished the next slot queues normally.
+      store.markDone(first.id, 122_000);
+      expect(store.enqueueDueRoutines(181_000)).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skips a routine slot whose next slot has already come rather than running it late", () => {
+    const store = new StateStore(databasePath());
+    try {
+      store.setThreadTarget("+15550000002", message("source", { content: "" }), 999);
+      const routine = store.createRoutineForThread("+15550000002", "check in", 60_000, 1_000);
+      // The machine slept through several slots; the first due slot is long past its interval.
+      expect(store.enqueueDueRoutines(400_000)).toBe(0);
+      expect(store.takeRoutineSkips()).toEqual([{ routineId: routine.id, scheduledAt: 61_000, reason: "missed" }]);
+      expect(store.claimNext(400_000)).toBeUndefined();
     } finally {
       store.close();
     }

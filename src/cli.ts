@@ -43,6 +43,16 @@ function configPath(args: string[]): string | undefined {
 async function start(args: string[]): Promise<void> {
   const config = await loadConfig({ configPath: configPath(args) });
   const logger = createLogger();
+  // A crash must leave a diagnosable JSON line, then exit non-zero so the supervisor
+  // restarts a clean process; whatever was in flight is re-queued at the next start.
+  process.on("unhandledRejection", (reason) => {
+    logger.error("unhandled_rejection", { error: reason instanceof Error ? reason : new Error(String(reason)) });
+    process.exit(1);
+  });
+  process.on("uncaughtException", (error) => {
+    logger.error("uncaught_exception", { error });
+    process.exit(1);
+  });
   const daemon = await startDaemon(config, logger);
   await new Promise<void>((resolveDone) => {
     let stopping = false;

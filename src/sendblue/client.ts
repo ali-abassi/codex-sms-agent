@@ -383,6 +383,10 @@ export class SendblueClient {
   ): Promise<unknown> {
     const controller = new AbortController();
     const timeoutMs = timeout(options.timeoutMs ?? this.#timeoutMs);
+    // Errors name the endpoint only. The query string carries filters such as the
+    // account's own number, URL-encoded so the log scrubber would not recognise it.
+    const requestPath = path;
+    path = path.split("?", 1)[0]!;
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abortReject: ((error: SendblueAbortError) => void) | undefined;
@@ -413,7 +417,7 @@ export class SendblueClient {
       headers["Content-Type"] = "application/json";
     }
 
-    const fetchPromise = this.#fetch(`${this.#baseUrl}${path}`, {
+    const fetchPromise = this.#fetch(`${this.#baseUrl}${requestPath}`, {
       method,
       headers,
       ...(body === undefined

@@ -56,10 +56,13 @@ export class IngestionService {
 
     const now = this.#now();
     const result = this.#options.store.enqueue(message, source, now);
-    this.#options.logger.info(result.inserted ? "message_queued" : "message_duplicate", {
-      handle: message.handle,
-      source,
-    });
+    // A duplicate from the poller is the overlap window working as designed, not news.
+    // Keep webhook duplicates at info, since those can mean redelivery worth noticing.
+    const duplicateLevel = source === "reconcile" ? "debug" : "info";
+    this.#options.logger[result.inserted ? "info" : duplicateLevel](
+      result.inserted ? "message_queued" : "message_duplicate",
+      { handle: message.handle, source },
+    );
     if (!result.inserted) return "duplicate";
     if (this.#options.onControl && controlCommandFor(message.content)) {
       if (this.#options.store.completePending(result.job.id, now)) this.#options.onControl(result.job);

@@ -50,6 +50,28 @@ describe("downloadInboundMedia", () => {
     })).rejects.toThrow("trusted Sendblue HTTPS URL");
   });
 
+  it("accepts inbound attachments from the Sendblue storage bucket and types them by extension", async () => {
+    const media = await downloadInboundMedia({
+      url: "https://storage.googleapis.com/inbound-file-store/signed/photo.png?signature=secret",
+      handle: "gcs-image",
+      root: await root(),
+      fetch: vi.fn(async () => new Response(new Uint8Array([1]), {
+        headers: { "content-type": "application/octet-stream" },
+      })) as typeof fetch,
+    });
+
+    expect(media.isImage).toBe(true);
+  });
+
+  it("rejects other paths on that storage host", async () => {
+    await expect(downloadInboundMedia({
+      url: "https://storage.googleapis.com/some-other-bucket/photo.png",
+      handle: "wrong-bucket",
+      root: await root(),
+      fetch: vi.fn() as unknown as typeof fetch,
+    })).rejects.toThrow(/trusted/i);
+  });
+
   it("validates every redirect destination", async () => {
     const fetcher = vi.fn(async () => new Response(null, {
       status: 302,

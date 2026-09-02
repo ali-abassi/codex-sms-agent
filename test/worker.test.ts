@@ -9,6 +9,7 @@ import { StateStore } from "../src/state/store.js";
 import { CodexRunnerError } from "../src/codex/runner.js";
 import { SendblueHttpError, SendblueNetworkError } from "../src/sendblue/client.js";
 import { AgentWorker, controlCommandFor, type MessagingPort } from "../src/worker.js";
+import { routineStaleAfter } from "../src/state/store.js";
 
 const directories: string[] = [];
 
@@ -166,6 +167,38 @@ describe("AgentWorker", () => {
     await test.worker.runOnce();
 
     expect(test.store.getJobByHandle("dead-letter")?.state).toBe("failed");
+    test.store.close();
+  });
+
+  it("never re-runs a turn after part of the reply was delivered, even on a transient provider error", async () => {
+    const test = harness(codexResult("session-half", { bubbles: ["first", "second"] }));
+    test.sendblue.sendDirect
+      .mockResolvedValueOnce({ messageHandle: "one", status: "QUEUED" })
+      .mockRejectedValueOnce(new SendblueNetworkError("POST", "/api/send-message"));
+    test.store.enqueue(message("half-delivered"), "webhook", 1);
+
+    await test.worker.runOnce();
+
+    // Retrying here would re-send the bubble the sender already has.
+    expect(test.store.getJobByHandle("half-delivered")?.state).toBe("done");
+    expect(await test.worker.runOnce()).toBe(false);
+    test.store.close();
+  });
+
+  it("drops a routine run that waited past its next slot instead of running it late", async () => {
+    const test = harness(codexResult("session-routine", { text: "stale check-in" }), { now: () => 10_000 });
+    test.store.enqueue(
+      message("routine:7:1000", { content: "[Scheduled routine #7] check in", raw: { routineId: 7, scheduledAt: 1_000, staleAfter: 9_000 } }),
+      "reconcile",
+      1_000,
+    );
+
+    expect(await test.worker.runOnce()).toBe(true);
+
+    expect(test.run).not.toHaveBeenCalled();
+    expect(test.sendblue.sendDirect).not.toHaveBeenCalled();
+    expect(test.store.getJobByHandle("routine:7:1000")?.state).toBe("done");
+    expect(logger.warn).toHaveBeenCalledWith("routine_run_skipped_stale", expect.objectContaining({ handle: "routine:7:1000" }));
     test.store.close();
   });
 

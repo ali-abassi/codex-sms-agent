@@ -19,6 +19,9 @@ const SHUTDOWN_GRACE_MS = 15_000;
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000;
 const JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const MEDIA_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const CLOCK_WATCH_INTERVAL_MS = 5_000;
+/** A tick this late means the process was frozen: the machine slept, or the loop was blocked. */
+const CLOCK_JUMP_THRESHOLD_MS = 60_000;
 
 async function pruneDirectory(root: string, olderThan: number): Promise<number> {
   let removed = 0;
@@ -130,6 +133,7 @@ export async function startDaemon(
     model: config.codexModel,
     reasoningEffort: config.codexReasoningEffort,
     timeoutMs: config.codexTimeoutMs,
+    execLauncherDir: join(config.stateDir, "bin"),
     operatorName: config.operatorName,
   });
   const instructionsPath = await codex.prepareWorkspace();
@@ -150,6 +154,7 @@ export async function startDaemon(
   });
 
   const controller = new AbortController();
+  const clock = { lastTick: Date.now(), jumps: 0, lastJumpAt: undefined as string | undefined, lastJumpMs: 0 };
   const workerTasks: Promise<void>[] = [];
 
   const server = await startHttpServer({
@@ -172,6 +177,12 @@ export async function startDaemon(
       activeAfter: new Date(activeAfter).toISOString(),
       model: config.codexModel,
       uptimeSeconds: Math.floor(process.uptime()),
+      queue: store.countJobs(),
+      inflightTurns: worker.inflightCount(),
+      clockJumps: {
+        count: clock.jumps,
+        ...(clock.lastJumpAt ? { lastAt: clock.lastJumpAt, lastGapMs: clock.lastJumpMs } : {}),
+      },
     }),
     logger: { error: (event) => logger.error(event) },
   });
@@ -196,6 +207,13 @@ export async function startDaemon(
     try {
       const queued = store.enqueueDueRoutines(Date.now());
       if (queued > 0) logger.info("routines_queued", { count: queued });
+      for (const skip of store.takeRoutineSkips()) {
+        logger.warn("routine_slot_skipped", {
+          routineId: skip.routineId,
+          scheduledAt: new Date(skip.scheduledAt).toISOString(),
+          reason: skip.reason,
+        });
+      }
     } catch (error) {
       logger.error("routine_scheduler_failed", { error });
     }
@@ -203,6 +221,21 @@ export async function startDaemon(
   enqueueRoutines();
   const routineTimer = setInterval(enqueueRoutines, 5_000);
   routineTimer.unref?.();
+
+  // Timers cannot fire while the machine sleeps, so a Codex turn that spans a sleep is
+  // charged for the whole gap and its provider calls run into a network that is not back
+  // yet. Recording the jump gives the failures that follow their real cause.
+  const clockTimer = setInterval(() => {
+    const now = Date.now();
+    const gap = now - clock.lastTick - CLOCK_WATCH_INTERVAL_MS;
+    clock.lastTick = now;
+    if (gap < CLOCK_JUMP_THRESHOLD_MS) return;
+    clock.jumps += 1;
+    clock.lastJumpAt = new Date(now).toISOString();
+    clock.lastJumpMs = gap;
+    logger.warn("clock_jump_detected", { gapMs: gap, inflightTurns: worker.inflightCount() });
+  }, CLOCK_WATCH_INTERVAL_MS);
+  clockTimer.unref?.();
 
   const maintenance = async () => {
     try {
@@ -243,6 +276,7 @@ export async function startDaemon(
       closed = true;
       controller.abort();
       clearInterval(routineTimer);
+      clearInterval(clockTimer);
       clearInterval(reconcileTimer);
       clearInterval(maintenanceTimer);
       await server.close();

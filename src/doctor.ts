@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, statfs } from "node:fs/promises";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
 import type { AgentConfig } from "./config.js";
@@ -12,10 +12,20 @@ export type DoctorCheck = {
   detail: string;
 };
 
+/** Below this the SQLite queue starts failing writes with "database or disk is full". */
+export const MIN_FREE_DISK_BYTES = 2 * 1024 * 1024 * 1024;
+
+async function defaultFreeBytes(path: string): Promise<number> {
+  const stats = await statfs(path);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
 export type DoctorDependencies = {
   exec?: (binary: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>;
   fetch?: typeof globalThis.fetch;
   checkPort?: (host: string, port: number) => Promise<boolean>;
+  /** Free bytes on the volume holding the state directory. */
+  freeBytes?: (path: string) => Promise<number>;
 };
 
 async function defaultExec(binary: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -103,6 +113,20 @@ export async function runDoctor(
     checks.push({ name: "state_directory", ok: true, detail: "writable" });
   } catch {
     checks.push({ name: "state_directory", ok: false, detail: "not writable" });
+  }
+
+  try {
+    const free = await (dependencies.freeBytes ?? defaultFreeBytes)(config.stateDir);
+    const gib = (free / 1024 ** 3).toFixed(1);
+    checks.push({
+      name: "disk_space",
+      ok: free >= MIN_FREE_DISK_BYTES,
+      detail: free >= MIN_FREE_DISK_BYTES
+        ? `${gib} GiB free`
+        : `${gib} GiB free; the queue database fails writes when the volume fills`,
+    });
+  } catch {
+    checks.push({ name: "disk_space", ok: true, detail: "could not measure" });
   }
 
   const portAvailable = await checkPort(config.host, config.port);

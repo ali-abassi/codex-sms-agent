@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   Codex,
   type CodexOptions,
@@ -17,10 +18,19 @@ import {
   parseFinalEnvelope,
   type ParsedFinalEnvelope,
 } from "./protocol.js";
+import { stableNodePath } from "../service.js";
 
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_REASONING_EFFORT: ModelReasoningEffort = "medium";
 export const DEFAULT_CODEX_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long to wait for the SDK to settle after its turn was aborted. The SDK only
+ * SIGTERMs the Codex binary and then reads stdout to EOF, so a grandchild holding the
+ * pipe can keep the promise pending indefinitely; past this grace the runner gives up
+ * on it and reports the timeout or cancellation itself.
+ */
+export const DEFAULT_ABORT_GRACE_MS = 15_000;
+export const EXEC_LAUNCHER_NAME = "codex-exec";
 
 const MANAGED_INSTRUCTIONS_START = "<!-- codex-sms-agent:managed:start -->";
 const MANAGED_INSTRUCTIONS_END = "<!-- codex-sms-agent:managed:end -->";
@@ -47,8 +57,8 @@ export type CodexRunnerErrorCode =
 export class CodexRunnerError extends Error {
   readonly code: CodexRunnerErrorCode;
 
-  constructor(code: CodexRunnerErrorCode, message: string) {
-    super(message);
+  constructor(code: CodexRunnerErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options as ErrorOptions | undefined);
     this.name = "CodexRunnerError";
     this.code = code;
   }
@@ -96,9 +106,46 @@ export type CodexRunnerOptions = {
   timeoutMs?: number;
   /** How the agent refers to the trusted sender in its instructions. */
   operatorName?: string;
+  /** Grace for the SDK to settle after an abort before the runner reports the failure itself. */
+  abortGraceMs?: number;
+  /**
+   * Directory for the executable that the SDK spawns instead of the raw Codex binary. It
+   * wraps `codex exec` in the supervising shim (see exec-shim.ts). Defaults to a
+   * per-user temp directory; the daemon points it at the state directory.
+   */
+  execLauncherDir?: string;
   parentEnv?: NodeJS.ProcessEnv;
   createClient?: (options: CodexOptions) => CodexLike;
 };
+
+/** Path of the supervising shim next to this module (dist/codex/exec-shim.js in production). */
+export function execShimPath(): string {
+  return fileURLToPath(new URL("./exec-shim.js", import.meta.url));
+}
+
+/**
+ * Write (or refresh) the tiny launcher the SDK executes. The SDK spawns `codexPathOverride`
+ * directly, so it must be an executable file; a shell script that execs Node on the shim
+ * keeps the compiled shim itself free of permission bits.
+ */
+export async function ensureExecLauncher(
+  directory: string,
+  options: { nodePath?: string; shimPath?: string } = {},
+): Promise<string> {
+  // Prefer the Homebrew opt symlink over the versioned Cellar path, which vanishes on upgrade.
+  const nodePath = options.nodePath ?? await stableNodePath();
+  const shimPath = options.shimPath ?? execShimPath();
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const content = `#!/bin/sh\nexec ${quote(nodePath)} ${quote(shimPath)} "$@"\n`;
+  const path = join(directory, EXEC_LAUNCHER_NAME);
+  const existing = await readFile(path, "utf8").catch(() => undefined);
+  if (existing !== content) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(path, content, { mode: 0o700 });
+  }
+  await chmod(path, 0o700);
+  return path;
+}
 
 const HOST_ENV_ALLOWLIST = [
   "HOME",
@@ -169,6 +216,27 @@ function isStaleThreadError(error: unknown): boolean {
   return /no saved session|(?:thread|session|rollout)[^\n]{0,80}?(?:not found|does not exist|no longer exists|could not be (?:found|resumed|loaded)|failed to (?:resume|load))/i.test(message);
 }
 
+function normalizeStructuredResponse(output: string): string {
+  try {
+    const candidate = JSON.parse(output) as Record<string, unknown>;
+    if (Array.isArray(candidate.bubbles) && candidate.bubbles.length === 0) delete candidate.bubbles;
+    for (const key of ["reaction", "media", "carousel"] as const) {
+      if (candidate[key] === null) {
+        delete candidate[key];
+        continue;
+      }
+      if (candidate[key] && typeof candidate[key] === "object" && !Array.isArray(candidate[key])) {
+        for (const [nestedKey, value] of Object.entries(candidate[key] as Record<string, unknown>)) {
+          if (value === null) delete (candidate[key] as Record<string, unknown>)[nestedKey];
+        }
+      }
+    }
+    return JSON.stringify(candidate);
+  } catch {
+    return output;
+  }
+}
+
 function metadataFor(turn: RunResult): CodexToolCallMetadata[] {
   return turn.items.flatMap((item): CodexToolCallMetadata[] => {
     if (item.type === "command_execution") {
@@ -188,6 +256,8 @@ export class CodexRunner {
   readonly model: string;
   readonly reasoningEffort: ModelReasoningEffort;
   readonly timeoutMs: number;
+  readonly abortGraceMs: number;
+  readonly execLauncherDir: string;
   readonly operatorName: string;
   readonly #parentEnv: NodeJS.ProcessEnv;
   readonly #createClient: (options: CodexOptions) => CodexLike;
@@ -197,6 +267,11 @@ export class CodexRunner {
     this.model = nonEmpty(options.model ?? DEFAULT_CODEX_MODEL, "model");
     this.reasoningEffort = options.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT;
     this.timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS, "timeoutMs");
+    this.abortGraceMs = positiveInteger(options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS, "abortGraceMs");
+    this.execLauncherDir = nonEmpty(
+      options.execLauncherDir ?? join(tmpdir(), `codex-sms-agent-${process.getuid?.() ?? "user"}`),
+      "execLauncherDir",
+    );
     this.operatorName = options.operatorName?.trim() || DEFAULT_OPERATOR_NAME;
     this.#parentEnv = options.parentEnv ?? process.env;
     this.#createClient = options.createClient ?? ((clientOptions) => new Codex(clientOptions));
@@ -224,7 +299,9 @@ export class CodexRunner {
     const prompt = nonEmpty(request.prompt, "prompt");
     await this.prepareWorkspace();
 
+    const codexPathOverride = await ensureExecLauncher(this.execLauncherDir);
     const client = this.#createClient({
+      codexPathOverride,
       env: buildCodexEnvironment(this.#parentEnv, request.environment),
       config: {
         hide_agent_reasoning: true,
@@ -262,6 +339,28 @@ export class CodexRunner {
       signal: abortController.signal,
     } satisfies TurnOptions;
 
+    // After an abort the SDK is expected to settle promptly. If it does not (the Codex
+    // process tree is still holding stdout open), stop waiting and report the abort
+    // ourselves; the dangling promise is observed so it can never become an unhandled
+    // rejection when it finally settles.
+    let graceTimer: NodeJS.Timeout | undefined;
+    const abortGrace = new Promise<never>((_resolve, reject) => {
+      const arm = () => {
+        graceTimer = setTimeout(
+          () => reject(new CodexRunnerError("aborted", `Codex did not release the turn within ${this.abortGraceMs}ms of being cancelled`)),
+          this.abortGraceMs,
+        );
+        graceTimer.unref?.();
+      };
+      if (abortController.signal.aborted) arm();
+      else abortController.signal.addEventListener("abort", arm, { once: true });
+    });
+    abortGrace.catch(() => undefined);
+    const settle = (turn: Promise<RunResult>): Promise<RunResult> => {
+      turn.catch(() => undefined);
+      return Promise.race([turn, abortGrace]);
+    };
+
     let threadReset = false;
     try {
       if (abortController.signal.aborted) throw new CodexRunnerError("aborted", "Codex turn was cancelled before it started");
@@ -270,22 +369,22 @@ export class CodexRunner {
       if (request.threadId && isCodexThreadId(request.threadId)) {
         thread = client.resumeThread(request.threadId, threadOptions);
         try {
-          turn = await thread.run(input, runOptions);
+          turn = await settle(thread.run(input, runOptions));
         } catch (error) {
           if (!isStaleThreadError(error) || abortController.signal.aborted) throw error;
           threadReset = true;
           thread = client.startThread(threadOptions);
-          turn = await thread.run(input, runOptions);
+          turn = await settle(thread.run(input, runOptions));
         }
       } else {
         thread = client.startThread(threadOptions);
-        turn = await thread.run(input, runOptions);
+        turn = await settle(thread.run(input, runOptions));
       }
 
       if (!thread.id || !isCodexThreadId(thread.id)) {
         throw new CodexRunnerError("invalid_response", "Codex returned no valid thread ID");
       }
-      const envelope = parseFinalEnvelope(turn.finalResponse);
+      const envelope = parseFinalEnvelope(normalizeStructuredResponse(turn.finalResponse));
       return {
         output: turn.finalResponse,
         envelope,
@@ -296,16 +395,25 @@ export class CodexRunner {
         threadReset,
       };
     } catch (error) {
-      if (error instanceof CodexRunnerError) throw error;
       if (timedOut) {
-        throw new CodexRunnerError("timeout", `Codex exceeded its ${this.timeoutMs}ms timeout`);
+        const released = error instanceof CodexRunnerError && error.code === "aborted" ? " (Codex was still running when the runner gave up waiting)" : "";
+        throw new CodexRunnerError("timeout", `Codex exceeded its ${this.timeoutMs}ms timeout${released}`);
       }
+      if (error instanceof CodexRunnerError) throw error;
       if (abortController.signal.aborted) {
         throw new CodexRunnerError("aborted", "Codex turn was cancelled");
       }
-      throw new CodexRunnerError("execution_failed", "Codex could not complete the turn");
+      // Carry the SDK's own reason forward. Without it a failure says only that the turn
+      // did not finish, which is unactionable; the logger scrubs the text before writing.
+      const reason = error instanceof Error && error.message ? `: ${error.message}` : "";
+      throw new CodexRunnerError(
+        "execution_failed",
+        `Codex could not complete the turn${reason}`,
+        { cause: error },
+      );
     } finally {
       clearTimeout(timeout);
+      if (graceTimer) clearTimeout(graceTimer);
       external?.removeEventListener("abort", onExternalAbort);
     }
   }

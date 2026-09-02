@@ -42,6 +42,21 @@ export interface StateStoreOptions {
   busyTimeoutMs?: number;
 }
 
+export interface RoutineSkip {
+  routineId: number;
+  scheduledAt: number;
+  /** `missed`: the next slot already came; `coalesced`: an earlier run is still open. */
+  reason: "missed" | "coalesced";
+}
+
+/** Epoch ms after which a queued routine run is not worth executing, if the job carries one. */
+export function routineStaleAfter(message: InboundMessage): number | undefined {
+  const raw = message.raw;
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const value = (raw as Record<string, unknown>).staleAfter;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 type Row = Record<string, unknown>;
 
 function epoch(value: number, label: string): number {
@@ -524,6 +539,24 @@ export class StateStore {
     return Number(result.changes) === 1;
   }
 
+  /** Routine slots the scheduler chose not to queue, drained by the daemon for logging. */
+  #routineSkips: RoutineSkip[] = [];
+
+  /** Drain the routine slots skipped by the last `enqueueDueRoutines` call. */
+  takeRoutineSkips(): RoutineSkip[] {
+    return this.#routineSkips.splice(0);
+  }
+
+  /** True when a run for this routine is still waiting or in flight. */
+  hasOpenRoutineRun(routineId: number): boolean {
+    const row = this.#database.prepare(`
+      SELECT 1 FROM inbound_jobs
+      WHERE provider_handle LIKE ? AND state IN ('pending', 'processing')
+      LIMIT 1
+    `).get(`routine:${positiveId(routineId)}:%`);
+    return row !== undefined;
+  }
+
   enqueueDueRoutines(now: number): number {
     epoch(now, "now");
     const rows = this.#database.prepare(
@@ -534,6 +567,15 @@ export class StateStore {
       const routine = toRoutine(row);
       const scheduledAt = routine.nextRunAt;
       const target = JSON.parse(requiredString(row, "target_json")) as InboundMessage;
+      const nextRunAt = nextRunAfter(now, routine, scheduledAt);
+      // Two ways a due slot is not worth a run. Its next slot has already come (the machine
+      // slept through it): running now would deliver stale output moments before the fresh
+      // one. Or its previous run is still queued or in flight (a turn overran): a second copy
+      // behind it is a backlog of stale check-ins blocking real messages. Skip the slot and
+      // only move the schedule forward.
+      const skip: RoutineSkip["reason"] | undefined = scheduledAt + routine.intervalMs <= now
+        ? "missed"
+        : this.hasOpenRoutineRun(routine.id) ? "coalesced" : undefined;
       const message: InboundMessage = {
         ...target,
         handle: `routine:${routine.id}:${Math.trunc(scheduledAt)}`,
@@ -541,13 +583,15 @@ export class StateStore {
         mediaUrl: undefined,
         replyTo: undefined,
         dateSent: now,
-        raw: { routineId: routine.id, scheduledAt },
+        // The run is pointless once its next slot has come: the worker drops it then.
+        raw: { routineId: routine.id, scheduledAt, staleAfter: Math.min(nextRunAt, scheduledAt + routine.intervalMs) },
       };
       this.#database.exec("BEGIN");
       try {
-        if (this.enqueue(message, "reconcile", now).inserted) queued += 1;
+        if (skip) this.#routineSkips.push({ routineId: routine.id, scheduledAt, reason: skip });
+        else if (this.enqueue(message, "reconcile", now).inserted) queued += 1;
         this.#database.prepare("UPDATE routines SET next_run_at = ? WHERE id = ?")
-          .run(nextRunAfter(now, routine, scheduledAt), routine.id);
+          .run(nextRunAt, routine.id);
         this.#database.exec("COMMIT");
       } catch (error) {
         this.#database.exec("ROLLBACK");

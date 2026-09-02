@@ -117,6 +117,23 @@ describe("doctor", () => {
     expect(execute.mock.calls.map((call) => call[1])).toEqual([["--version"], ["login", "status"]]);
     expect(execute.mock.calls.flat(2)).not.toContain("exec");
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(checks).toContainEqual(expect.objectContaining({ name: "disk_space", ok: true }));
+  });
+
+  it("flags a nearly full volume before the queue database starts failing writes", async () => {
+    const root = await directory();
+    const checks = await runDoctor(config(root), {
+      exec: vi.fn(async () => ({ stdout: "codex-cli 0.149.0\n", stderr: "" })),
+      fetch: vi.fn(async () => new Response(JSON.stringify({ lines: [{ phone_number: "+15550000001" }] }), { status: 200 })) as unknown as typeof fetch,
+      checkPort: vi.fn(async () => true),
+      freeBytes: vi.fn(async () => 512 * 1024 * 1024),
+    });
+
+    expect(checks).toContainEqual(expect.objectContaining({
+      name: "disk_space",
+      ok: false,
+      detail: expect.stringContaining("0.5 GiB free"),
+    }));
   });
 
   it("passes the port check when this agent already holds the port", async () => {

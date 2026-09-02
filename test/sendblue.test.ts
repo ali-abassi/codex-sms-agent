@@ -5,6 +5,10 @@ import { join } from "node:path";
 import {
   SendblueClient,
   SendblueError,
+  SendblueHttpError,
+  SendblueNetworkError,
+  SendblueTimeoutError,
+  isTransientSendblueError,
   SendblueValidationError,
 } from "../src/sendblue/client.js";
 import {
@@ -241,6 +245,21 @@ describe("SendblueClient", () => {
     });
   });
 
+  it("names only the endpoint in errors, never the query string that carries the account number", async () => {
+    const test = harness([response({ error: "down" }, 503)]);
+    let observed = "";
+    try {
+      await test.client.listMessages({ sendblueNumber: "+15550000001", limit: 10 });
+    } catch (error) {
+      observed = JSON.stringify(error);
+    }
+    expect(observed).toContain("GET /api/v2/messages failed with HTTP 503");
+    expect(observed).not.toContain("sendblue_number");
+    expect(observed).not.toContain("15550000001");
+    // The request itself still carried the filters.
+    expect(String(test.fetcher.mock.calls[0]?.[0])).toContain("sendblue_number=%2B15550000001");
+  });
+
   it("returns typed, secret-free HTTP and malformed-response errors", async () => {
     const test = harness([response({ private: "credential-sentinel" }, 401)]);
     let observed = "";
@@ -254,6 +273,17 @@ describe("SendblueClient", () => {
     expect(observed).not.toContain("private-key-id");
     expect(observed).not.toContain("private-secret");
     expect(observed).not.toContain("credential-sentinel");
+  });
+});
+
+describe("Sendblue transient classification", () => {
+  it("classifies outages, rate limits, and timeouts as transient", () => {
+    expect(isTransientSendblueError(new SendblueNetworkError("POST", "/x"))).toBe(true);
+    expect(isTransientSendblueError(new SendblueTimeoutError("POST", "/x"))).toBe(true);
+    expect(isTransientSendblueError(new SendblueHttpError("POST", "/x", 503))).toBe(true);
+    expect(isTransientSendblueError(new SendblueHttpError("POST", "/x", 429))).toBe(true);
+    expect(isTransientSendblueError(new SendblueHttpError("POST", "/x", 401))).toBe(false);
+    expect(isTransientSendblueError(new Error("anything else"))).toBe(false);
   });
 });
 

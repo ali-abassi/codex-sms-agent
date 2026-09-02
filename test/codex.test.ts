@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -11,10 +11,12 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_CODEX_MODEL,
+  EXEC_LAUNCHER_NAME,
   CodexRunner,
   CodexRunnerError,
   buildCodexEnvironment,
 } from "../src/codex/runner.js";
+import { stableNodePath } from "../src/service.js";
 import {
   FINAL_ENVELOPE_OUTPUT_SCHEMA,
   parseFinalEnvelope,
@@ -192,7 +194,63 @@ describe("CodexRunner", () => {
     expect(run.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });
 
-  it("reports an external cancellation as aborted, not timeout, and flags fresh-thread fallbacks", async () => {
+  it("stops waiting for an SDK turn that never settles after the timeout abort", async () => {
+    // Mirrors the SDK when a grandchild keeps the Codex stdout pipe open after SIGTERM:
+    // the signal is observed but the promise never resolves or rejects.
+    const run = vi.fn((_input: Input, _options?: TurnOptions) => new Promise<RunResult>(() => undefined));
+    const runner = new CodexRunner({
+      workspace: workspace(),
+      timeoutMs: 10,
+      abortGraceMs: 20,
+      createClient: () => ({ startThread: () => ({ id: THREAD_A, run }), resumeThread: vi.fn() }),
+    });
+
+    const started = Date.now();
+    await expect(runner.run({ prompt: "hang" })).rejects.toMatchObject({
+      code: "timeout",
+      message: expect.stringContaining("still running"),
+    });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(run.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("stops waiting for an SDK turn that never settles after an external cancel", async () => {
+    const run = vi.fn((_input: Input, _options?: TurnOptions) => new Promise<RunResult>(() => undefined));
+    const runner = new CodexRunner({
+      workspace: workspace(),
+      abortGraceMs: 20,
+      createClient: () => ({ startThread: () => ({ id: THREAD_A, run }), resumeThread: vi.fn() }),
+    });
+    const external = new AbortController();
+    const pending = runner.run({ prompt: "hang", signal: external.signal });
+    external.abort("cancelled");
+
+    await expect(pending).rejects.toMatchObject({ code: "aborted" } satisfies Partial<CodexRunnerError>);
+  });
+
+  it("points the SDK at a supervising launcher that execs the shim", async () => {
+    const launcherDir = join(workspace(), "bin");
+    let clientOptions: CodexOptions | undefined;
+    const runner = new CodexRunner({
+      workspace: workspace(),
+      execLauncherDir: launcherDir,
+      createClient: (options) => {
+        clientOptions = options;
+        return { startThread: () => ({ id: THREAD_A, run: vi.fn(async () => completed()) }), resumeThread: vi.fn() };
+      },
+    });
+
+    await runner.run({ prompt: "x" });
+
+    expect(clientOptions?.codexPathOverride).toBe(join(launcherDir, EXEC_LAUNCHER_NAME));
+    const launcher = await readFile(clientOptions!.codexPathOverride!, "utf8");
+    expect(launcher.startsWith("#!/bin/sh\n")).toBe(true);
+    expect(launcher).toContain(await stableNodePath());
+    expect(launcher).toContain("exec-shim.js");
+    expect((await stat(clientOptions!.codexPathOverride!)).mode & 0o777).toBe(0o700);
+  });
+
+  it("reports an external cancellation as aborted, not timeout, and flags fresh-thread fallbacks", async () =>{
     const run = vi.fn((_input: Input, options?: TurnOptions) => new Promise<RunResult>((_resolve, reject) => {
       options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
     }));
