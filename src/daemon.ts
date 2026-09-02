@@ -20,6 +20,7 @@ const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000;
 const JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const MEDIA_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const CLOCK_WATCH_INTERVAL_MS = 5_000;
+const CWD_WATCH_INTERVAL_MS = 60_000;
 /** A tick this late means the process was frozen: the machine slept, or the loop was blocked. */
 const CLOCK_JUMP_THRESHOLD_MS = 60_000;
 
@@ -58,6 +59,22 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener("abort", abort, { once: true });
     timeout.unref?.();
   });
+}
+
+/**
+ * True when this process's working directory has been unlinked. `npm run build` deletes
+ * the build output directory, and if the service was started with that as its working
+ * directory, the kernel leaves the process on a dangling inode: every spawn from then on
+ * fails with ENOENT, so no Codex turn can run again until a restart. Node surfaces that
+ * as `process.cwd()` throwing.
+ */
+export function workingDirectoryMissing(cwd: () => string = () => process.cwd()): boolean {
+  try {
+    cwd();
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 export type DaemonHooks = {
@@ -225,6 +242,15 @@ export async function startDaemon(
   // Timers cannot fire while the machine sleeps, so a Codex turn that spans a sleep is
   // charged for the whole gap and its provider calls run into a network that is not back
   // yet. Recording the jump gives the failures that follow their real cause.
+  // Cheap liveness probe for the failure above: one stat a minute, and a restart that
+  // fixes it, rather than hours of every turn failing instantly.
+  const cwdTimer = setInterval(() => {
+    if (!workingDirectoryMissing()) return;
+    logger.error("working_directory_missing", { restarting: true });
+    onFatal("working_directory_missing");
+  }, CWD_WATCH_INTERVAL_MS);
+  cwdTimer.unref?.();
+
   const clockTimer = setInterval(() => {
     const now = Date.now();
     const gap = now - clock.lastTick - CLOCK_WATCH_INTERVAL_MS;
@@ -277,6 +303,7 @@ export async function startDaemon(
       controller.abort();
       clearInterval(routineTimer);
       clearInterval(clockTimer);
+      clearInterval(cwdTimer);
       clearInterval(reconcileTimer);
       clearInterval(maintenanceTimer);
       await server.close();

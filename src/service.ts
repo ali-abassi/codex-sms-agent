@@ -20,6 +20,7 @@ export function launchAgentPlist(options: {
   cliPath: string;
   configPath: string;
   logDirectory: string;
+  workingDirectory: string;
 }): string {
   const args = [options.nodePath, options.cliPath, "start", "--config", options.configPath];
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -29,7 +30,7 @@ export function launchAgentPlist(options: {
   <key>Label</key><string>${SERVICE_LABEL}</string>
   <key>ProgramArguments</key>
   <array>${args.map((arg) => `\n    <string>${xml(arg)}</string>`).join("")}\n  </array>
-  <key>WorkingDirectory</key><string>${xml(dirname(options.cliPath))}</string>
+  <key>WorkingDirectory</key><string>${xml(options.workingDirectory)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -45,6 +46,7 @@ export function systemdUserUnit(options: {
   nodePath: string;
   cliPath: string;
   configPath: string;
+  workingDirectory: string;
 }): string {
   return `[Unit]
 Description=Codex SMS Agent
@@ -54,7 +56,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${[options.nodePath, options.cliPath, "start", "--config", options.configPath].map(systemdQuote).join(" ")}
-WorkingDirectory=${systemdQuote(dirname(options.cliPath))}
+WorkingDirectory=${systemdQuote(options.workingDirectory)}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -91,12 +93,18 @@ export async function installUserService(options: {
   const nodePath = options.nodePath ?? await stableNodePath();
   const configPath = resolve(options.configPath);
   const logDirectory = join(options.stateDir, "logs");
+  // Never the build output directory. `npm run build` deletes it, and a process whose
+  // working directory has been unlinked cannot spawn anything: every child fails with
+  // ENOENT until the service is restarted. The state directory is stable and is created
+  // by the daemon itself.
+  const workingDirectory = resolve(options.stateDir);
   await mkdir(logDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
 
   if (platform === "darwin") {
     const path = join(homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, launchAgentPlist({ nodePath, cliPath: options.cliPath, configPath, logDirectory }), { mode: 0o600 });
+    await writeFile(path, launchAgentPlist({ nodePath, cliPath: options.cliPath, configPath, logDirectory, workingDirectory }), { mode: 0o600 });
     await chmod(path, 0o600);
     await execFileAsync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}`, path]).catch(() => undefined);
     await execFileAsync("launchctl", ["bootstrap", `gui/${process.getuid?.() ?? 0}`, path]);
@@ -106,7 +114,7 @@ export async function installUserService(options: {
   if (platform === "linux") {
     const path = join(homedir(), ".config", "systemd", "user", "codex-sms-agent.service");
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await writeFile(path, systemdUserUnit({ nodePath, cliPath: options.cliPath, configPath }), { mode: 0o600 });
+    await writeFile(path, systemdUserUnit({ nodePath, cliPath: options.cliPath, configPath, workingDirectory }), { mode: 0o600 });
     await execFileAsync("systemctl", ["--user", "daemon-reload"]);
     await execFileAsync("systemctl", ["--user", "enable", "--now", "codex-sms-agent.service"]);
     return path;

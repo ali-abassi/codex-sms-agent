@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AgentConfig } from "../src/config.js";
 import { runDoctor } from "../src/doctor.js";
 import { createLogger } from "../src/log.js";
 import { launchAgentPlist, stableNodePath, systemdUserUnit } from "../src/service.js";
+import { workingDirectoryMissing } from "../src/daemon.js";
 import { writeSetupConfig } from "../src/setup.js";
 
 const directories: string[] = [];
@@ -69,6 +70,7 @@ describe("service templates", () => {
       nodePath: "/usr/local/bin/node",
       cliPath: "/opt/codex-sms-agent/dist/cli.js",
       configPath: "/Users/test/.config/codex-sms-agent/config.json",
+      workingDirectory: "/Users/test/.local/state/codex-sms-agent",
     };
     const plist = launchAgentPlist({ ...options, logDirectory: "/Users/test/logs" });
     const unit = systemdUserUnit(options);
@@ -81,6 +83,41 @@ describe("service templates", () => {
       expect(text).not.toContain("SENDBLUE_API_SECRET");
       expect(text).not.toContain("WEBHOOK_SECRET");
     }
+  });
+
+  it("never runs the service from the build output directory, which `npm run build` deletes", async () => {
+    const root = await directory();
+    const stateDir = join(root, "state");
+    const cliPath = join(root, "app", "dist", "cli.js");
+    const plist = launchAgentPlist({
+      nodePath: "/usr/local/bin/node",
+      cliPath,
+      configPath: join(root, "config.json"),
+      logDirectory: join(stateDir, "logs"),
+      workingDirectory: stateDir,
+    });
+    const unit = systemdUserUnit({
+      nodePath: "/usr/local/bin/node",
+      cliPath,
+      configPath: join(root, "config.json"),
+      workingDirectory: stateDir,
+    });
+
+    // A process whose working directory is unlinked cannot spawn anything: every child
+    // fails with ENOENT until it restarts.
+    expect(plist).toContain(`<key>WorkingDirectory</key><string>${stateDir}</string>`);
+    expect(plist).not.toContain(`<key>WorkingDirectory</key><string>${dirname(cliPath)}</string>`);
+    expect(unit).toContain(`WorkingDirectory="${stateDir}"`);
+    expect(unit).not.toContain(`WorkingDirectory="${dirname(cliPath)}"`);
+  });
+});
+
+describe("working directory watchdog", () => {
+  it("reports a working directory that has been unlinked", () => {
+    expect(workingDirectoryMissing()).toBe(false);
+    expect(workingDirectoryMissing(() => {
+      throw Object.assign(new Error("uv_cwd ENOENT"), { code: "ENOENT" });
+    })).toBe(true);
   });
 });
 
