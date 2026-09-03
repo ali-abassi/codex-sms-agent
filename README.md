@@ -1,6 +1,6 @@
 # Codex SMS Agent
 
-Turn Codex into a full assistant that lives on your Mac and does work for you over text. Free, through Sendblue.
+Turn Codex into a full assistant that lives on your Mac and does work for you over text. Sendblue's free shared-line plan works for personal use and prototyping; dedicated production lines are paid.
 
 ```text
 you:    i have an idea for a habit tracker app. build me an mvp and send it my way
@@ -27,8 +27,8 @@ Anything you could do sitting at that computer, it can do while you're away.
 ## What you need
 
 1. **A computer that stays on.** Your Mac, a spare Mac mini, or a VM. Node 22.13+.
-2. **A ChatGPT plan with Codex.** This is the only thing you pay for. `npm install -g @openai/codex && codex login`, then `codex login status` must say *Logged in using ChatGPT*.
-3. **A free Sendblue number.** [Sendblue](https://sendblue.com) is the SMS/iMessage provider. It gives the agent its own phone number, so it never touches your personal iMessage. Sign up and copy the **API Key ID**, **API Secret Key**, and the number as `+15551234567`.
+2. **A ChatGPT plan with Codex.** `npm install -g @openai/codex && codex login`, then `codex login status` must say *Logged in using ChatGPT*.
+3. **A Sendblue line.** [Sendblue](https://sendblue.com) is the SMS/iMessage provider. Its free shared-line plan is enough to prototype this with verified contacts; dedicated production lines cost extra. Sign up and copy the **API Key ID**, **API Secret Key**, and the assigned number in E.164 format, such as `+15551234567`.
 4. **[Tailscale](https://tailscale.com/download)**, so Sendblue can reach your computer. ngrok works too.
 
 ## Install
@@ -177,7 +177,7 @@ you:    why did that last task fail?
 you:    you keep timing out on long builds. raise the timeout and restart yourself
 ```
 
-`curl localhost:8787/health` answers the "is it actually working?" questions without reading logs: mode, model, uptime, queue counts by state, turns in flight, whether the clock has jumped (the signature of the machine having slept), and `reconcile` — when inbound polling last succeeded, how many polls in a row failed, and how long it's been quiet. That last one exists because a healthy idle poller and a dead one used to look identical.
+`curl localhost:8787/health` answers the "is it actually working?" questions without reading logs: mode, model, uptime, queue counts by state, turns in flight, whether the clock has jumped (the signature of the machine having slept), and `reconcile` — when inbound polling last succeeded, how many polls in a row failed, and how long it's been quiet. An idle poller also writes `reconcile_alive` every 30 quiet polls (about 30 minutes), so both the endpoint and logs distinguish healthy silence from a stopped poller.
 
 Logs are JSON lines: event names, timings, masked phone numbers, job ids, and error messages. Your message text, prompts, tool output, and keys are redacted before anything is written, so it can see what failed and why without seeing what you said.
 
@@ -215,12 +215,12 @@ A text arrives. It's dropped unless it's a direct message from an allowlisted nu
 The parts you don't have to build:
 
 - **Threads.** One conversation per sender, resumed every time. It remembers.
-- **Typing indicators.** Your text is marked read right away, and the typing bubble stays up while Codex works, so a long task doesn't look dead.
+- **Typing indicators.** The agent makes a best-effort read-state update and refreshes the typing bubble while Codex works, so a long task doesn't look dead.
 - **A queue.** One task at a time per sender. Reboot or kill it mid-task and the job resumes.
-- **Retries.** If Sendblue is down when a reply is ready, it replays that finished reply for ~15 minutes (6 tries, backing off) without re-running Codex. If nothing reached you at all and Sendblue was unreachable, it retries the whole turn on the same schedule rather than filing a failure you'd never see. Either way it never texts you twice: once any part of a reply has gone out, that turn is never re-run.
+- **Retries.** If Sendblue is down when a reply is ready, it replays the cached, validated reply for ~15 minutes (6 attempts, backing off) without re-running Codex. If Codex failed and even the fallback could not reach Sendblue, it retries the whole turn on the same schedule. Once the provider reports that any part of a reply was accepted, the turn is never re-run; as with any HTTP messaging client, an ambiguous timeout after provider acceptance cannot guarantee exactly-once delivery.
 - **Limits.** Bad output becomes plain text, never an action. It can only send you files from its own workspace.
 - **Sleep and stuck turns.** A cancelled turn kills the whole Codex process tree instead of hanging on a grandchild holding the pipe, and a turn in flight holds a `caffeinate` assertion so the machine doesn't drop into idle sleep mid-task. If the machine sleeps anyway, a routine slot whose next slot has already come is skipped instead of waking to a backlog of stale check-ins.
-- **A watchdog.** It checks once a minute that its own working directory still exists and restarts if it doesn't. That sounds obscure; it was a real nine-hour silent outage. Rebuilding the code deleted the directory the running service was sitting in, and on macOS a process whose cwd is gone can't spawn anything — so every reply became "hit a snag" while `/health` still answered 200.
+- **A stable service directory and watchdog.** `service install` runs the daemon from its state directory rather than the replaceable `dist` build directory. It also checks once a minute that its working directory still exists and restarts if it does not, preventing a rebuild from leaving future child processes failing with `ENOENT` while `/health` still answers.
 
 ## Config
 
@@ -259,7 +259,7 @@ cd codex-sms-agent && git pull && npm ci && npm run build
 codex-sms-agent service install     # safe to re-run
 ```
 
-Everything is in `~/.local/share/codex-sms-agent/state.sqlite`. Stop the service and copy it to back it up. Finished jobs are deleted after 30 days, attachments after 7.
+Durable queue, thread, and routine state is in `~/.local/share/codex-sms-agent/state.sqlite`; logs and downloaded media are separate under the state directory. Stop the service and copy the database to back it up. Finished jobs are deleted after 30 days, and downloaded inbound media after 7 days.
 
 ## Development
 
@@ -267,6 +267,6 @@ Everything is in `~/.local/share/codex-sms-agent/state.sqlite`. Stop the service
 npm run check    # typecheck + tests + build
 ```
 
-114 tests, no network and no simulator, a few seconds. No test sends a real message. `test/exec-shim.test.ts` is a real process-level test rather than a mock: it runs the shim against fake `codex` binaries and asserts that a grandchild holding stdout doesn't stall the turn and that a Codex ignoring SIGTERM still gets killed.
+114 tests, no external network and no simulator, a few seconds. No test sends a real message. `test/exec-shim.test.ts` is a real process-level test rather than a mock: it runs the shim against fake `codex` binaries and asserts that a grandchild holding stdout doesn't stall the turn and that a Codex ignoring SIGTERM still gets killed.
 
 Recent changes are in [CHANGELOG.md](CHANGELOG.md). See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
